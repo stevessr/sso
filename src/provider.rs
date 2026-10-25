@@ -111,6 +111,7 @@ pub async fn normalize(state: &AppState, provider: &Provider, raw: Value) -> App
         .or_else(|| raw["username"].as_str()).unwrap_or(&sub).to_owned();
     let email = raw["email"].as_str().filter(|_| raw["email_verified"] == true).map(str::to_owned);
     let avatar = raw["picture"].as_str().or_else(|| raw["profile_image_url"].as_str()).map(str::to_owned);
+    let verified_email = email.clone();
     let row = sqlx::query(&state.db.q("SELECT fields, script FROM mappings WHERE provider=?"))
         .bind(&provider.id).fetch_optional(&state.db.pool).await?;
     let mut out = json!({"name":name, "email":email, "avatar":avatar});
@@ -134,7 +135,7 @@ pub async fn normalize(state: &AppState, provider: &Provider, raw: Value) -> App
     Ok(Profile {
         provider: provider.id.clone(), subject: sub,
         name: out["name"].as_str().unwrap_or("User").chars().take(150).collect(),
-        email: out["email"].as_str().map(|s| s.chars().take(254).collect()),
+        email: out["email"].as_str().filter(|s| verified_email.as_deref() == Some(*s)).map(|s| s.chars().take(254).collect()),
         avatar: out["avatar"].as_str().filter(|s| s.starts_with("https://")).map(|s| s.chars().take(2048).collect())
     })
 }
