@@ -62,13 +62,17 @@ pub async fn enforce_session(state: &AppState, user: &str, digest: &str) -> AppR
     if row.is_none() { return Err(AppError::forbidden()); }
     Ok(())
 }
+fn valid_next(next:&str)->bool {
+    next=="/" || next.strip_prefix("/consent?request=")
+        .map(|id|!id.is_empty() && id.len()<=128 && id.bytes()
+            .all(|b|b.is_ascii_alphanumeric() || b==b'_' || b==b'-'))
+        .unwrap_or(false)
+}
 pub async fn new_session_target(
     state: &AppState, user: &str, digest: &str, next: &str, passkey_verified: bool,
 ) -> AppResult<String> {
     // Path is server-generated, never read from a browser redirect parameter.
-    if !next.starts_with('/') || next.starts_with("//") || next.contains('\r') || next.contains('\n') {
-        return Err(AppError::bad("invalid post-MFA redirect"));
-    }
+    if !valid_next(next) { return Err(AppError::bad("invalid post-MFA redirect")); }
     if passkey_verified {
         sqlx::query(&state.db.q("INSERT INTO session_assurance (token_hash,factor,verified_at) VALUES (?,'passkey',?)"))
             .bind(digest).bind(crypto::now()).execute(&state.db.pool).await?;
@@ -198,7 +202,8 @@ pub async fn verify(State(state):State<AppState>,headers:HeaderMap,Json(data):Js
         .bind(&digest).execute(&mut *tx).await?;
     tx.commit().await?;
     let next=row.and_then(|r|r.try_get::<String,_>("next_path").ok()).unwrap_or_else(||"/".into());
-    Ok(Json(json!({"ok":true,"next":next})))
+    let safe_next=if valid_next(&next) {next} else {"/".into()};
+    Ok(Json(json!({"ok":true,"next":safe_next})))
 }
 pub async fn disable(State(state):State<AppState>,headers:HeaderMap,Json(data):Json<CodeInput>)->AppResult<Json<Value>> {
     auth::require_same_origin(&state,&headers)?;
@@ -247,10 +252,13 @@ mod tests{
         assert!(enforce_session(&state,"user","attacker-session").await.is_err());
     }
     #[test]
-    fn post_mfa_next_must_be_first_party_path() {
-        for target in ["//evil.example","https://evil.example","\n/consent",""] {
-            assert!(!target.starts_with('/') || target.starts_with("//") || target.contains('\n'));
+    fn post_mfa_next_must_be_a_server_generated_path() {
+        for target in ["//evil.example","https://evil.example","\n/consent","",
+            "/\\evil.example","/consent?request=../admin","/admin"] {
+            assert!(!valid_next(target), "unexpected open redirect: {target}");
         }
+        assert!(valid_next("/"));
+        assert!(valid_next("/consent?request=valid_random-id_123"));
     }
     #[test]
     fn otp_has_six_digits(){
