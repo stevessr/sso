@@ -5,6 +5,7 @@ mod provider;
 mod auth;
 mod management;
 mod rate_limit;
+mod refresh;
 
 use axum::{
     extract::DefaultBodyLimit, http::{StatusCode, header, HeaderName, HeaderValue}, response::{IntoResponse, Response},
