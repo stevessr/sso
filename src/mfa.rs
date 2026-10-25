@@ -148,6 +148,10 @@ pub async fn enroll_confirm(State(state):State<AppState>,headers:HeaderMap,Json(
         .bind(&user).execute(&mut *tx).await?;
     sqlx::query(&state.db.q("UPDATE refresh_tokens SET revoked=1 WHERE user_id=?"))
         .bind(&user).execute(&mut *tx).await?;
+    sqlx::query(&state.db.q("UPDATE codes SET used=1 WHERE user_id=? AND used=0"))
+        .bind(&user).execute(&mut *tx).await?;
+    sqlx::query(&state.db.q("UPDATE pending_consents SET used=1 WHERE user_id=? AND used=0"))
+        .bind(&user).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(json!({"enabled":true,"recovery_codes":recovery})))
 }
@@ -223,6 +227,30 @@ mod tests{
         assert!(open_with(&key,"bob",&sealed).is_err());
         let mut corrupted=sealed.clone();corrupted.push('X');
         assert!(open_with(&key,"alice",&corrupted).is_err());
+    }
+    #[tokio::test]
+    async fn otp_enabled_sessions_require_explicit_assurance() {
+        let db=std::sync::Arc::new(crate::db::Db::open("sqlite::memory:").await.unwrap());
+        let config=crate::config::Config {
+            public_url:"http://localhost:3000".into(),
+            bind:"127.0.0.1:3000".parse().unwrap(),auto_port:false,
+            db_url:"sqlite::memory:".into(),admin_token_hash:crypto::digest("unused"),
+            registration_token_hash:None,providers:vec![],
+        };
+        let state=AppState{config:std::sync::Arc::new(config),db,http:reqwest::Client::new()};
+        sqlx::query("INSERT INTO totp_accounts (user_id,sealed_secret,enabled,last_step) VALUES ('user','encrypted',1,-1)")
+            .execute(&state.db.pool).await.unwrap();
+        assert!(enforce_session(&state,"user","session").await.is_err());
+        sqlx::query("INSERT INTO session_assurance (token_hash,factor,verified_at) VALUES ('session','totp',1)")
+            .execute(&state.db.pool).await.unwrap();
+        assert!(enforce_session(&state,"user","session").await.is_ok());
+        assert!(enforce_session(&state,"user","attacker-session").await.is_err());
+    }
+    #[test]
+    fn post_mfa_next_must_be_first_party_path() {
+        for target in ["//evil.example","https://evil.example","\n/consent",""] {
+            assert!(!target.starts_with('/') || target.starts_with("//") || target.contains('\n'));
+        }
     }
     #[test]
     fn otp_has_six_digits(){
