@@ -48,8 +48,8 @@ mod tests {
         let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM clients").fetch_one(&db.pool).await.expect("clients table");
         assert_eq!(row.0, 0);
     }
-    #[test]
-    fn postgresql_placeholders_numbered() {
+    #[tokio::test]
+    async fn postgresql_placeholders_numbered() {
         let db = Db { pool: AnyPool::connect_lazy("sqlite::memory:").unwrap(), postgres: true };
         assert_eq!(db.q("SELECT a FROM t WHERE a=? AND b=?"), "SELECT a FROM t WHERE a=$1 AND b=$2");
     }
