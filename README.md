@@ -7,7 +7,7 @@ Rust OAuth2 identity broker with a Chinese MD3-inspired management interface.
 ## Features
 
 - Upstream Google and Telegram OIDC with signed ID token and issuer/audience/nonce validation; X OAuth2/PKCE using authenticated users/me; custom OIDC/OAuth2-userinfo provider configuration.
-- Downstream OAuth2 Authorization Code + PKCE S256, explicit user consent (allow/deny), one-time authorization codes, opaque bearer access tokens, scope-restricted userinfo, RFC7662 introspection and revocation.
+- Downstream OAuth2 Authorization Code + PKCE S256, explicit user consent (allow/deny), one-time authorization codes, opaque bearer access tokens, scope-restricted userinfo, RFC7662 introspection and revocation. Optional explicit `offline_access` consent enables a 30-day absolute-lifetime, one-time-use rotating refresh-token family. Reuse or grant revocation invalidates the whole family and its linked access tokens.
 - SQLite default; PostgreSQL and MySQL through SQLx runtime AnyPool.
 - Gated dynamic client registration, strict redirect allowlists, user-managed application access/revocation and third-party account binding/unbinding; admin disable/enable, rotate client secrets and remove linked-app policies.
 - Cross-app token-exchange policies: permanent revoke, durable timed suspension that survives fresh logins, and resume. Active status is evaluated at every userinfo/introspection request.
@@ -15,6 +15,7 @@ Rust OAuth2 identity broker with a Chinese MD3-inspired management interface.
 - Background image upload with Material Color Utilities image quantization, HCT tonal palettes and browser-responsive light/dark schemes.
 - Optional locally built WASM AES-GCM for encrypting local configuration drafts, not for concealing OAuth credentials.
 - Optional port fallback restricted to loopback interface.
+- Bounded, in-process per-TCP-peer IP and endpoint-group rate limits on login, authorization, callback, token, registration, consent, account and admin APIs; `Retry-After` on HTTP 429. Incoming `X-Forwarded-For` is intentionally never trusted.
 
 ## Local run
 
@@ -30,8 +31,8 @@ For deployed environments set SSO_PUBLIC_URL to a **HTTPS origin**, use a TLS re
 
 1. Browser redirects to GET /oauth/authorize with response_type=code, client_id, exact redirect_uri, state, code_challenge, code_challenge_method=S256, and optional provider=google|telegram|x.
 2. Server authenticates user with an upstream provider, verifies upstream identity, and displays a first-party consent screen explaining the client and requested permissions. Declining sends access_denied; approving issues a short-lived one-time authorization code with the original state.
-3. Client POSTs to /oauth/token with grant_type=authorization_code, code, redirect_uri, code_verifier and client credentials (Basic auth or form client_id/client_secret).
-4. Call GET /oauth/userinfo with Authorization: Bearer ACCESS_TOKEN. Only granted profile/email scopes are returned. Revoke with POST /oauth/revoke. Confidential OAuth clients can POST to /oauth/introspect (token, client_id, client_secret) to verify only their own access tokens; public PKCE clients cannot introspect.
+3. Client POSTs to /oauth/token with grant_type=authorization_code, code, redirect_uri, code_verifier and client credentials (Basic auth or form client_id/client_secret). Request `scope=profile email offline_access` during authorization **only if** offline refresh is needed; the consent page explicitly discloses it.
+4. Call GET /oauth/userinfo with Authorization: Bearer ACCESS_TOKEN. Only granted profile/email scopes are returned. If `offline_access` was approved, POST `grant_type=refresh_token&refresh_token=...&client_id=...` to `/oauth/token` (plus client secret for confidential clients), **atomically replace** the stored refresh token after each response, and treat `invalid_grant` as a requirement to sign in again. Refreshing does not extend the original absolute 30-day grant expiry. Revoke access or refresh tokens with POST /oauth/revoke. Confidential OAuth clients can POST to /oauth/introspect (token, client_id, client_secret) to verify only their own access tokens; public PKCE clients cannot introspect.
 
 POST /connect/register requires Authorization: Bearer SSO_REGISTRATION_TOKEN (or SSO_ADMIN_TOKEN). Public clients still need PKCE; anonymous open registration is intentionally disabled.
 
@@ -49,11 +50,16 @@ Configure GOOGLE_CLIENT_ID/SECRET, TELEGRAM_CLIENT_ID/SECRET and X_CLIENT_ID/SEC
 
 SSO_AUTO_PORT=true tries the next 20 TCP ports only for a loopback bind, rewriting the localhost public URL when necessary. Do not use auto-port selection for public callbacks.
 
+## Authentication endpoint limits
+
+The gateway has in-memory fixed-window per-peer-IP limits (5-minute windows for most sensitive actions, one hour for registration). They do not coordinate between replicas and cannot distinguish users sharing one reverse proxy connection. Put a **trusted reverse proxy / edge WAF per-real-client rate limiter** in front of deployments; do not forward an unvalidated user-supplied X-Forwarded-For as proof of identity. Distributed production installations should use a shared limit store, such as Redis.
+
 ## Security boundaries
 
 - Only the verified upstream subject is used for account identity; custom JS may map name/email/avatar but cannot change the subject.
 - Access tokens, authorization codes and sessions are SHA-256 hashed at rest, and codes/states/consent requests are single-use. A host-only HttpOnly flow cookie and current SSO session check protect browser callback linking; account linking requires a same-origin POST.
 - Linked-app rules operate on SSO-issued tokens, not the provider's own sessions or tokens. Suspended tokens resume only when unexpired and not revoked.
+- Refresh tokens are stored only as SHA-256 digests; rotating tokens are never returned twice. A replayed refresh token revokes its family and all linked access tokens. Client disable, secret rotation, user app revocation and cross-app revoke also invalidate refresh grants.
 - Client apps can call RFC7662 introspection to enforce revocation and persistent timed app blocks. Client-scoped introspection is intentionally limited to confidential clients; resource server integration and caching policy still need to be reviewed before production.
 - Admin bearer token is kept in the browser page memory, not persisted. Never reveal it to downstream apps. CSP, no-store, no-referrer, nosniff and anti-framing headers are set; HTML uses external JS and CSS.
 - The image upload now generates Material Color Utilities HCT scheme JSON at GET /theme; an average RGB fallback remains when theme loading fails.
@@ -61,4 +67,4 @@ SSO_AUTO_PORT=true tries the next 20 TCP ports only for a loopback bind, rewriti
 
 ## Release checklist
 
-Still required before production: real upstream-provider integration fixtures, rate limiting and abuse detection, broader CSRF/replay threat-model review, audit logging and retention, versioned migrations, cross-database and high-concurrency tests, account race hardening, refresh token rotation, optional signed downstream OIDC ID tokens/JWKS, administrator RBAC, per-client scopes/consent history and real TLS reverse-proxy validation.
+Still required before production: real upstream-provider integration fixtures, **shared edge/distributed rate limiting** and bot detection, broader CSRF/replay threat-model review, audit logging and retention, versioned migrations, PostgreSQL/MySQL and high-concurrency tests, account race hardening, optional signed downstream OIDC ID tokens/JWKS, administrator RBAC, client-specific scope allowlists/consent history and real TLS reverse-proxy validation.
