@@ -69,13 +69,13 @@ fn valid_next(next:&str)->bool {
         .unwrap_or(false)
 }
 pub async fn new_session_target(
-    state: &AppState, user: &str, digest: &str, next: &str, passkey_verified: bool,
+    state: &AppState, user: &str, digest: &str, next: &str, verified_factor: Option<&str>,
 ) -> AppResult<String> {
     // Path is server-generated, never read from a browser redirect parameter.
     if !valid_next(next) { return Err(AppError::bad("invalid post-MFA redirect")); }
-    if passkey_verified {
-        sqlx::query(&state.db.q("INSERT INTO session_assurance (token_hash,factor,verified_at) VALUES (?,'passkey',?)"))
-            .bind(digest).bind(crypto::now()).execute(&state.db.pool).await?;
+    if let Some(factor)=verified_factor {
+        sqlx::query(&state.db.q("INSERT INTO session_assurance (token_hash,factor,verified_at) VALUES (?,?,?)"))
+            .bind(digest).bind(factor).bind(crypto::now()).execute(&state.db.pool).await?;
         return Ok(next.into());
     }
     if enabled(state,user).await? {
@@ -83,10 +83,19 @@ pub async fn new_session_target(
             .bind(digest).bind(next).bind(crypto::now()+300).execute(&state.db.pool).await?;
         return Ok("/mfa".into());
     }
+    sqlx::query(&state.db.q("INSERT INTO session_assurance (token_hash,factor,verified_at) VALUES (?,'upstream',?)"))
+        .bind(digest).bind(crypto::now()).execute(&state.db.pool).await?;
     Ok(next.into())
 }
 pub async fn page()->Html<&'static str>{
     Html(include_str!("../web/mfa.html"))
+}
+pub async fn require_recent_login(state:&AppState,headers:&HeaderMap)->AppResult<()> {
+    let digest=cookie_digest(headers)?;
+    let row=sqlx::query(&state.db.q("SELECT verified_at FROM session_assurance WHERE token_hash=? AND verified_at>=?"))
+        .bind(digest).bind(crypto::now()-600).fetch_optional(&state.db.pool).await?;
+    if row.is_none(){return Err(AppError::forbidden())}
+    Ok(())
 }
 pub async fn status(State(state): State<AppState>,headers:HeaderMap)->AppResult<Json<Value>> {
     let user=auth::session_user_raw(&state,&headers).await?;
@@ -100,6 +109,7 @@ pub async fn status(State(state): State<AppState>,headers:HeaderMap)->AppResult<
 pub async fn enroll_start(State(state):State<AppState>,headers:HeaderMap)->AppResult<Json<Value>> {
     auth::require_same_origin(&state,&headers)?;
     let user=auth::session_user(&state,&headers).await?;
+    require_recent_login(&state,&headers).await?;
     if enabled(&state,&user).await? {return Err(AppError::bad("TOTP is already enabled"))}
     let mut secret=[0u8;20];OsRng.fill_bytes(&mut secret);
     let code=data_encoding::BASE32_NOPAD.encode(&secret);
