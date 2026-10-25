@@ -257,6 +257,18 @@ pub async fn remove(State(state):State<AppState>,headers:HeaderMap,Path(id):Path
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[tokio::test]
+    async fn ceremony_consumption_is_atomic_and_rejects_cross_session_use(){
+        let db=crate::db::Db::open("sqlite::memory:").await.unwrap();
+        sqlx::query("INSERT INTO passkey_challenges (id,user_id,kind,state_json,session_hash,expires,used) VALUES ('unique-ceremony','alice','stepup','{}','browser-a',9999999999,0)")
+            .execute(&db.pool).await.unwrap();
+        let wrong=sqlx::query("SELECT state_json FROM passkey_challenges WHERE id='unique-ceremony' AND session_hash='browser-b'")
+            .fetch_optional(&db.pool).await.unwrap();
+        assert!(wrong.is_none());
+        let attempt=||sqlx::query("UPDATE passkey_challenges SET used=1 WHERE id='unique-ceremony' AND session_hash='browser-a' AND used=0 AND expires>0");
+        assert_eq!(attempt().execute(&db.pool).await.unwrap().rows_affected(),1);
+        assert_eq!(attempt().execute(&db.pool).await.unwrap().rows_affected(),0);
+    }
     #[test]
     fn browser_flow_cookie_is_exact_and_constant_time_compared(){
         let mut headers=HeaderMap::new();
