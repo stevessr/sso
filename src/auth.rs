@@ -343,7 +343,7 @@ pub async fn links(State(state): State<AppState>, headers: HeaderMap) -> AppResu
     }))).collect();
     Ok(Json(json!(linked)))
 }
-pub async fn link(State(state): State<AppState>, headers: HeaderMap, Path(provider): Path<String>) -> AppResult<Redirect> {
+pub async fn link(State(state): State<AppState>, headers: HeaderMap, Path(provider): Path<String>) -> AppResult<Response> {
     let id=session_user(&state,&headers).await?;
     begin(&state,&provider,Transaction {
         mode:"link".into(),provider:String::new(),verifier:String::new(),nonce:String::new(),
