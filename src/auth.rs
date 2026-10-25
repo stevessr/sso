@@ -66,7 +66,7 @@ pub async fn authorize(State(state): State<AppState>, Query(q): Query<AuthorizeQ
     }
     check_client(&state, &q.client_id, &q.redirect_uri).await?;
     if let Some(scope) = &q.scope {
-        if scope.len() > 128 || scope.split_whitespace().any(|s| !["profile", "email"].contains(&s)) {
+        if scope.len() > 128 || scope.trim().is_empty() || scope.split_whitespace().any(|s| !["profile", "email"].contains(&s)) {
             return Err(AppError::bad("unsupported scope"));
         }
     }
@@ -326,11 +326,16 @@ pub async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> AppR
         .bind(crypto::digest(bearer)).bind(crypto::now()).bind(crypto::now()).bind(crypto::now())
         .fetch_optional(&state.db.pool).await?.ok_or_else(AppError::unauthorized)?;
     let scope: String = row.try_get("scope")?;
-    let email = if scope.split_whitespace().any(|s| s == "email") {
-        row.try_get::<Option<String>,_>("email")?
-    } else { None };
-    Ok(Json(json!({"sub":row.try_get::<String,_>("id")?,"name":row.try_get::<String,_>("name")?,
-        "email":email,"picture":row.try_get::<Option<String>,_>("avatar")?})))
+    let scopes: Vec<&str> = scope.split_whitespace().collect();
+    let mut result = json!({"sub":row.try_get::<String,_>("id")?});
+    if scopes.contains(&"profile") {
+        result["name"] = json!(row.try_get::<String,_>("name")?);
+        result["picture"] = json!(row.try_get::<Option<String>,_>("avatar")?);
+    }
+    if scopes.contains(&"email") {
+        result["email"] = json!(row.try_get::<Option<String>,_>("email")?);
+    }
+    Ok(Json(result))
 }
 
 #[derive(Deserialize)]
@@ -448,6 +453,7 @@ pub async fn revoke_app(State(state): State<AppState>, headers: HeaderMap,
 }
 
 pub async fn link(State(state): State<AppState>, headers: HeaderMap, Path(provider): Path<String>) -> AppResult<Response> {
+    require_same_origin(&state,&headers)?;
     let id=session_user(&state,&headers).await?;
     begin(&state,&provider,Transaction {
         mode:"link".into(),provider:String::new(),verifier:String::new(),nonce:String::new(),
