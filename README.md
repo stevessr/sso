@@ -10,7 +10,7 @@ This is an active development implementation. Merging the initial gateway to `ma
 
 ## Features
 
-- Upstream Google and Telegram OIDC with signed ID token and issuer/audience/nonce validation; X OAuth2/PKCE using authenticated users/me; custom OIDC/OAuth2-userinfo provider configuration.
+- Upstream Google and Telegram OIDC with signed ID token and issuer/audience/nonce validation; X, GitHub and Discord OAuth2/PKCE using authenticated userinfo; custom OIDC/OAuth2-userinfo provider configuration.
 - Downstream OAuth2 Authorization Code + PKCE S256, explicit user consent (allow/deny), one-time authorization codes, opaque bearer access tokens, scope-restricted userinfo, RFC7662 introspection and revocation. Optional explicit `offline_access` consent enables a 30-day absolute-lifetime, one-time-use rotating refresh-token family. Reuse or grant revocation invalidates the whole family and its linked access tokens.
 - SQLite default; PostgreSQL and MySQL through SQLx runtime AnyPool.
 - Gated machine dynamic client registration (admin or initialization bearer token), plus signed-in user self-service client registration (10 per account, isolated ownership, lifecycle enable/disable and confidential-secret rotation). Strict redirect allowlists, user-managed application access/revocation and third-party account binding/unbinding; admin disable/enable, rotate client secrets and remove linked-app policies.
@@ -84,7 +84,7 @@ PostgreSQL: DATABASE_URL=postgres://user:pass@localhost:5432/sso
 
 MySQL: DATABASE_URL=mysql://user:pass@localhost:3306/sso
 
-Configure GOOGLE_CLIENT_ID/SECRET, TELEGRAM_CLIENT_ID/SECRET and X_CLIENT_ID/SECRET. For Telegram, add the OAuth callback URL in BotFather. For custom providers supply SSO_PROVIDERS_JSON containing objects with id, label, kind (oidc or oauth_userinfo), client_id, client_secret, authorize_url, token_url, scopes, token_auth_basic, issuer, jwks_url or userinfo_url as appropriate. Remote endpoints require HTTPS.
+Configure GOOGLE_CLIENT_ID/SECRET, TELEGRAM_CLIENT_ID/SECRET, X_CLIENT_ID/SECRET, GITHUB_CLIENT_ID/SECRET and DISCORD_CLIENT_ID/SECRET. For Telegram, add the OAuth callback URL in BotFather. For custom providers supply SSO_PROVIDERS_JSON containing objects with id, label, kind (oidc or oauth_userinfo), client_id, client_secret, authorize_url, token_url, scopes, token_auth_basic, issuer, jwks_url or userinfo_url as appropriate. Remote endpoints require HTTPS.
 
 SSO_AUTO_PORT=true tries the next 20 TCP ports only for a loopback bind, rewriting the localhost public URL when necessary. Do not use auto-port selection for public callbacks.
 
