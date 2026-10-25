@@ -1,0 +1,47 @@
+name: Rust CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: sso_ci
+          POSTGRES_USER: sso_ci
+          POSTGRES_PASSWORD: sso_ci_pw
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sso_ci -d sso_ci"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: sso_ci
+          MYSQL_USER: sso_ci
+          MYSQL_PASSWORD: sso_ci_pw
+          MYSQL_ROOT_PASSWORD: root_ci_pw
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot_ci_pw"
+          --health-interval 5s --health-timeout 3s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test (SQLite + PostgreSQL + MySQL)
+        env:
+          SSO_TEST_POSTGRES_URL: postgres://sso_ci:sso_ci_pw@127.0.0.1:5432/sso_ci
+          SSO_TEST_MYSQL_URL: mysql://sso_ci:sso_ci_pw@127.0.0.1:3306/sso_ci
+        run: cargo test
+      - name: Verify WASM draft encryption crate
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check --manifest-path frontend-crypto/Cargo.toml --target wasm32-unknown-unknown
+      - name: Validate browser scripts
+        run: |
+          node --check web/assets/app.js
+          node --check web/assets/consent.js

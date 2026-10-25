@@ -1,0 +1,20 @@
+# Copy .env.example to .env, replace BOTH sample secrets with independent
+# cryptographically random values, then run: docker compose up --build -d
+services:
+  sso:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SSO_BIND: 0.0.0.0:3000
+      SSO_AUTO_PORT: "false"
+      DATABASE_URL: sqlite://data/sso.db
+    ports:
+      # Never publish the development HTTP listener to the public internet.
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - sso-data:/app/data
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  sso-data:

@@ -1,0 +1,11 @@
+.git
+.github
+target
+frontend-crypto/target
+data
+.env
+*.db
+*.db-*
+web/wasm
+Dockerfile
+compose.yaml
