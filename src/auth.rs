@@ -500,6 +500,59 @@ mod tests {
     }
 
 
+
+    async fn seed_consent(s: &AppState, id: &str) -> HeaderMap {
+        sqlx::query("INSERT INTO clients (id,name,secret_hash,redirects,created,enabled) VALUES ('app','Example Application',NULL,'[\"https://example.test/cb\"]',0,1)")
+            .execute(&s.db.pool).await.unwrap();
+        sqlx::query("INSERT INTO pending_consents (id,user_id,client_id,redirect_uri,challenge,scope,downstream_state,expires,used) VALUES (?,'user','app','https://example.test/cb',?,'profile email','original-state',?,0)")
+            .bind(id).bind(crypto::pkce_challenge(&crypto::random_token()))
+            .bind(crypto::now()+180).execute(&s.db.pool).await.unwrap();
+        sqlx::query("INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,'user',?)")
+            .bind(crypto::digest("browser-session")).bind(crypto::now()+300)
+            .execute(&s.db.pool).await.unwrap();
+        let mut headers=HeaderMap::new();
+        headers.insert(header::COOKIE,"other=x; sso_session=browser-session".parse().unwrap());
+        headers.insert(header::ORIGIN,"http://localhost:3000".parse().unwrap());
+        headers
+    }
+    #[tokio::test]
+    async fn consent_is_bound_to_user_and_one_time() {
+        let s=fixture().await;
+        let headers=seed_consent(&s,"pending-1").await;
+        let details=consent_details(State(s.clone()),headers.clone(),
+            Query(ConsentRequest{request:"pending-1".into()})).await.unwrap().0;
+        assert_eq!(details["client_name"],"Example Application");
+        let redirect=consent_decision(State(s.clone()),headers.clone(),
+            Form(ConsentDecision{request:"pending-1".into(),decision:"allow".into()})).await.unwrap();
+        let response=redirect.into_response();
+        let location=response.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+        let url=Url::parse(location).unwrap();
+        assert_eq!(url.query_pairs().find(|(k,_)|k=="state").unwrap().1,"original-state");
+        assert!(url.query_pairs().any(|(k,_)|k=="code"));
+        let row=sqlx::query("SELECT COUNT(*) AS n FROM codes").fetch_one(&s.db.pool).await.unwrap();
+        assert_eq!(row.try_get::<i64,_>("n").unwrap(),1);
+        assert!(consent_decision(State(s.clone()),headers.clone(),
+            Form(ConsentDecision{request:"pending-1".into(),decision:"allow".into()})).await.is_err());
+        let mut attacker=HeaderMap::new();
+        attacker.insert(header::ORIGIN,"http://localhost:3000".parse().unwrap());
+        assert!(consent_details(State(s),attacker,
+            Query(ConsentRequest{request:"pending-1".into()})).await.is_err());
+    }
+    #[tokio::test]
+    async fn refusal_sends_access_denied_without_issuing_code() {
+        let s=fixture().await;
+        let headers=seed_consent(&s,"pending-denied").await;
+        let redir=consent_decision(State(s.clone()),headers,
+            Form(ConsentDecision{request:"pending-denied".into(),decision:"deny".into()})).await.unwrap();
+        let response=redir.into_response();
+        let location=response.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+        let url=Url::parse(location).unwrap();
+        assert_eq!(url.query_pairs().find(|(k,_)|k=="error").unwrap().1,"access_denied");
+        assert!(!url.query_pairs().any(|(k,_)|k=="code"));
+        let row=sqlx::query("SELECT COUNT(*) AS n FROM codes").fetch_one(&s.db.pool).await.unwrap();
+        assert_eq!(row.try_get::<i64,_>("n").unwrap(),0);
+    }
+
     #[tokio::test]
     async fn callback_rejects_missing_or_wrong_browser_flow_cookie() {
         let s = fixture().await;
