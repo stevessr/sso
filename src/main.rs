@@ -98,6 +98,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/passkeys/register/finish", post(passkey::register_finish))
         .route("/passkeys/login/start", post(passkey::login_start))
         .route("/passkeys/login/finish", post(passkey::login_finish))
+        .route("/passkeys/stepup/start", post(passkey::stepup_start))
+        .route("/passkeys/stepup/finish", post(passkey::stepup_finish))
         .route("/me/passkeys", get(passkey::list))
         .route("/me/passkeys/{id}", axum::routing::delete(passkey::remove))
         .route("/oauth/authorize", get(auth::authorize))
