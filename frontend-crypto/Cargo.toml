@@ -1,0 +1,16 @@
+[package]
+name = "sso-frontend-crypto"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
+sha2 = "0.10"
+getrandom = { version = "0.2", features = ["js"] }
+base64 = "0.22"
