@@ -154,10 +154,19 @@ pub async fn login_finish(State(state):State<AppState>,headers:HeaderMap,Json(bo
     let mut tx=state.db.pool.begin().await?;
     // Prevent concurrent assertions from silently overwriting authenticator
     // counters or backup-state updates made by another request.
-    let updated=sqlx::query(&state.db.q("UPDATE passkeys SET credential_json=? WHERE credential_id=? AND user_id=? AND credential_json=?"))
-        .bind(updated_key).bind(id).bind(&user).bind(original_key)
-        .execute(&mut *tx).await?;
-    if updated.rows_affected()!=1 {return Err(AppError::bad("passkey credential changed; retry"))}
+    if updated_key==original_key {
+        // Synchronized passkeys often have no counter changes. MySQL reports 0
+        // affected rows for no-op updates, even when the row is present.
+        let current=sqlx::query(&state.db.q(
+            "SELECT credential_id FROM passkeys WHERE credential_id=? AND user_id=? AND credential_json=?"))
+            .bind(&id).bind(&user).bind(&original_key).fetch_optional(&mut *tx).await?;
+        if current.is_none(){return Err(AppError::bad("passkey credential changed; retry"))}
+    } else {
+        let updated=sqlx::query(&state.db.q("UPDATE passkeys SET credential_json=? WHERE credential_id=? AND user_id=? AND credential_json=?"))
+            .bind(updated_key).bind(id).bind(&user).bind(original_key)
+            .execute(&mut *tx).await?;
+        if updated.rows_affected()!=1 {return Err(AppError::bad("passkey credential changed; retry"))}
+    }
     let session=crypto::random_token();
     let session_digest=crypto::digest(&session);
     sqlx::query(&state.db.q("INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,?,?)"))
@@ -226,10 +235,17 @@ pub async fn stepup_finish(State(state):State<AppState>,headers:HeaderMap,Json(b
         }
     }
     let (id,old,new)=update.ok_or_else(AppError::unauthorized)?;
-    let changed=sqlx::query(&state.db.q(
-        "UPDATE passkeys SET credential_json=? WHERE credential_id=? AND user_id=? AND credential_json=?"
-    )).bind(new).bind(id).bind(&user).bind(old).execute(&state.db.pool).await?;
-    if changed.rows_affected()!=1 {return Err(AppError::bad("passkey changed concurrently"))}
+    if new==old {
+        let existing=sqlx::query(&state.db.q(
+            "SELECT credential_id FROM passkeys WHERE credential_id=? AND user_id=? AND credential_json=?"))
+            .bind(&id).bind(&user).bind(&old).fetch_optional(&state.db.pool).await?;
+        if existing.is_none(){return Err(AppError::bad("passkey changed concurrently"))}
+    } else {
+        let changed=sqlx::query(&state.db.q(
+            "UPDATE passkeys SET credential_json=? WHERE credential_id=? AND user_id=? AND credential_json=?"
+        )).bind(new).bind(id).bind(&user).bind(old).execute(&state.db.pool).await?;
+        if changed.rows_affected()!=1 {return Err(AppError::bad("passkey changed concurrently"))}
+    }
     let next=mfa::mark_factor(&state,&headers,"passkey").await?;
     Ok(Json(json!({"ok":true,"next":next})))
 }
