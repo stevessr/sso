@@ -354,6 +354,41 @@ mod tests {
         headers.insert(header::AUTHORIZATION,"Bearer ci-local-admin-secret".parse().unwrap());
         (AppState{config:Arc::new(cfg),db,http:reqwest::Client::new()},headers)
     }
+    #[tokio::test]
+    async fn self_service_registration_is_private_and_enforces_quota() {
+        let (s, _) = fixture().await;
+        for (token,user) in [("owner-session","owner"), ("other-session","other")] {
+            sqlx::query("INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,?,?)")
+                .bind(crypto::digest(token)).bind(user).bind(crypto::now()+300)
+                .execute(&s.db.pool).await.unwrap();
+        }
+        let headers = |token: &str| {
+            let mut h=HeaderMap::new();
+            h.insert(header::ORIGIN,"http://localhost:3000".parse().unwrap());
+            h.insert(header::COOKIE,format!("sso_session={token}").parse().unwrap());
+            h
+        };
+        let input = || ClientInput {
+            client_name:"My owned app".into(),
+            redirect_uris:vec!["https://owned.example.test/cb".into()],
+            public_client:false,
+        };
+        let (_,created)=personal_create(State(s.clone()),headers("owner-session"),Json(input())).await.unwrap();
+        let id=created.0["client_id"].as_str().unwrap().to_owned();
+        assert!(created.0["client_secret"].as_str().is_some());
+        let owner_list=personal_list(State(s.clone()),headers("owner-session")).await.unwrap().0;
+        let other_list=personal_list(State(s.clone()),headers("other-session")).await.unwrap().0;
+        assert_eq!(owner_list.as_array().unwrap().len(),1);
+        assert_eq!(other_list.as_array().unwrap().len(),0);
+        assert!(personal_disable(State(s.clone()),headers("other-session"),Path(id.clone())).await.is_err());
+        personal_disable(State(s.clone()),headers("owner-session"),Path(id.clone())).await.unwrap();
+        let rotated=personal_rotate(State(s.clone()),headers("owner-session"),Path(id.clone())).await.unwrap();
+        assert_ne!(rotated.0["client_secret"],created.0["client_secret"]);
+        personal_enable(State(s.clone()),headers("owner-session"),Path(id.clone())).await.unwrap();
+        for _ in 0..9 { new_client(&s,input(),Some("owner")).await.unwrap(); }
+        assert!(personal_create(State(s),headers("owner-session"),Json(input())).await.is_err());
+    }
+
     #[test]
     fn strict_redirect_validation() {
         assert!(validate_redirects(&["https://app.example.test/callback".into()]).is_ok());
