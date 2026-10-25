@@ -4,21 +4,7 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>授权确认 · SSO</title>
-<style>
-:root{font:16px/1.55 Roboto,"Noto Sans SC",system-ui,sans-serif;color-scheme:light dark}
-*{box-sizing:border-box}body{min-height:100vh;margin:0;background:#f8f6fb;color:#211f26;display:grid;place-items:center;padding:20px}
-main{width:min(520px,100%);background:#fff;border-radius:28px;padding:clamp(22px,4vw,38px);box-shadow:0 18px 75px #261b3718;border:1px solid #e7e0ec}
-.logo{width:58px;height:58px;border-radius:21px;background:#6750a4;color:white;display:grid;place-items:center;font-weight:800;font-size:27px}
-h1{font-size:30px;line-height:1.2;font-weight:650;margin:24px 0 15px}.muted{color:#625b71}
-.grant{background:#f4eff9;border-radius:19px;padding:17px 20px;margin:16px 0;overflow-wrap:anywhere}
-.grant strong{font-size:18px}.scope{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
-.scope span{padding:7px 13px;border-radius:100px;background:#e7def8;font-size:13px;color:#3d2c67}
-.actions{display:flex;gap:12px;justify-content:flex-end;flex-wrap:wrap;margin-top:30px}
-button{border:0;border-radius:24px;padding:12px 25px;font:inherit;font-weight:650;cursor:pointer}
-button:disabled{opacity:.5;cursor:not-allowed}.allow{background:#6750a4;color:white}.deny{background:#e7e0ec;color:#241b35}
-#message{min-height:1.5em;color:#b3261e;font-size:13px}
-@media(prefers-color-scheme:dark){body{background:#141218;color:#e6e0e9}main{background:#211f26;border-color:#46424a}.muted{color:#b5adbd}.grant{background:#302b38}.scope span{background:#4f3d71;color:#e6d7ff}.deny{background:#44404b;color:#f0e9f4}}
-</style>
+<link rel="stylesheet" href="/assets/consent.css">
 </head>
 <body>
 <main>
@@ -35,25 +21,6 @@ button:disabled{opacity:.5;cursor:not-allowed}.allow{background:#6750a4;color:wh
 <p id="message" role="status"></p>
 <form method="POST" action="/oauth/consent/decision" id="consent-form"><input type="hidden" name="request" id="request-value"><div class="actions"><button id="deny" name="decision" value="deny" class="deny" disabled>拒绝</button><button id="allow" name="decision" value="allow" class="allow" disabled>允许访问</button></div></form>
 </main>
-<script>
-'use strict';
-const q=new URLSearchParams(location.search), id=q.get('request');
-const byId=name=>document.getElementById(name);
-function error(message){byId('message').textContent=message}
-async function load(){
- if(!id||id.length>256){error('授权请求参数无效');return}
- try{
- const r=await fetch('/oauth/consent/request?request='+encodeURIComponent(id),{credentials:'same-origin',cache:'no-store'});
- const v=await r.json();if(!r.ok)throw Error(v.error||'授权请求已失效');
- byId('app').textContent=v.client_name;
- byId('client-id').textContent=v.client_id;
- byId('redirect').textContent=v.redirect_uri;
- const scope=byId('scopes');scope.replaceChildren();
- for(const name of v.scope.split(/\s+/).filter(Boolean)){const chip=document.createElement('span');chip.textContent=name==='email'?'读取已验证邮箱':name==='profile'?'读取个人资料':name;scope.append(chip)}
- byId('request-value').value=id;byId('allow').disabled=false;byId('deny').disabled=false;
- }catch(e){error(e.message)}
-}
-load();
-</script>
+<script src="/assets/consent.js" defer></script>
 </body>
 </html>
