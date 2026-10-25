@@ -33,7 +33,7 @@ button:disabled{opacity:.5;cursor:not-allowed}.allow{background:#6750a4;color:wh
 </section>
 <p class="muted" style="font-size:13px">只有同意后，SSO 才会向此应用签发一次性授权码。拒绝不会向应用泄露你的账号资料。</p>
 <p id="message" role="status"></p>
-<div class="actions"><button id="deny" class="deny" disabled>拒绝</button><button id="allow" class="allow" disabled>允许访问</button></div>
+<form method="POST" action="/oauth/consent/decision" id="consent-form"><input type="hidden" name="request" id="request-value"><div class="actions"><button id="deny" name="decision" value="deny" class="deny" disabled>拒绝</button><button id="allow" name="decision" value="allow" class="allow" disabled>允许访问</button></div></form>
 </main>
 <script>
 'use strict';
@@ -50,25 +50,9 @@ async function load(){
  byId('redirect').textContent=v.redirect_uri;
  const scope=byId('scopes');scope.replaceChildren();
  for(const name of v.scope.split(/\s+/).filter(Boolean)){const chip=document.createElement('span');chip.textContent=name==='email'?'读取已验证邮箱':name==='profile'?'读取个人资料':name;scope.append(chip)}
- byId('allow').disabled=false;byId('deny').disabled=false;
+ byId('request-value').value=id;byId('allow').disabled=false;byId('deny').disabled=false;
  }catch(e){error(e.message)}
 }
-async function decide(decision){
- for(const k of ['allow','deny'])byId(k).disabled=true;
- error('正在处理授权…');
- try{
-   const r=await fetch('/oauth/consent/decision',{method:'POST',credentials:'same-origin',
-     headers:{'Content-Type':'application/json'},body:JSON.stringify({request:id,decision}),redirect:'manual'});
-   // fetch redirects using manual; opaque redirects cannot expose the destination.
-   // The endpoint sends 303/302 to an external registered callback URL, so request a
-   // fresh top-level navigation using the same-origin handoff below.
-   if(r.status===200){const v=await r.json();if(v.redirect){location.assign(v.redirect);return}}
-   if(r.status>=300&&r.status<400){location.assign('/consent/complete?request='+encodeURIComponent(id));return}
-   const v=await r.json().catch(()=>({}));throw Error(v.error||'无法处理授权');
- }catch(e){error(e.message);byId('allow').disabled=false;byId('deny').disabled=false}
-}
-byId('allow').onclick=()=>decide('allow');
-byId('deny').onclick=()=>decide('deny');
 load();
 </script>
 </body>
