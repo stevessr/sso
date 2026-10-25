@@ -27,6 +27,22 @@ Rust OAuth2 identity broker with a Chinese MD3-inspired management interface.
 
 For deployed environments set SSO_PUBLIC_URL to a **HTTPS origin**, use a TLS reverse proxy, and register the exact upstream callback URI for each provider.
 
+## Container deployment and WASM browser module
+
+Local container smoke setup (the compose port binds **only** to the host loopback address):
+
+```bash
+cp .env.example .env
+# Replace the two sample admin/registration values with INDEPENDENT strong secrets,
+# e.g. generate each with: openssl rand -base64 48
+docker compose up --build -d
+curl -fsS http://127.0.0.1:3000/healthz
+```
+
+The multi-stage `Dockerfile` builds both the Rust gateway and `frontend-crypto` with `wasm-pack` and runs as an unprivileged user. SQLite data and uploaded backgrounds persist in the `sso-data` volume. The optional browser AES-GCM mapping-draft encryption then works without manually copying a WASM bundle. For a non-container deployment, run `bash scripts/build-wasm.sh` after installing `wasm-pack`, then `cargo run --release`.
+
+For a public deployment set `SSO_PUBLIC_URL` to the **exact HTTPS origin** served by a trusted TLS proxy and update upstream provider callback allowlists. Add a real-client-aware edge rate limiter and keep the SSO listener private. Do not use the development `localhost` origin for production.
+
 ## Downstream OAuth2 flow
 
 1. Browser redirects to GET /oauth/authorize with response_type=code, client_id, exact redirect_uri, state, code_challenge, code_challenge_method=S256, and optional provider=google|telegram|x.
