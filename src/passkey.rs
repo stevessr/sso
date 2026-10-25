@@ -53,6 +53,7 @@ pub struct RegistrationFinish {request_id:String,credential:Value,label:Option<S
 pub async fn register_start(State(state):State<AppState>,headers:HeaderMap)->AppResult<Json<Value>>{
     auth::require_same_origin(&state,&headers)?;
     let user=auth::session_user(&state,&headers).await?;
+    mfa::require_recent_login(&state,&headers).await?;
     let uuid=Uuid::parse_str(&user).map_err(|_|AppError::bad("invalid local user ID"))?;
     let old=credentials(&state,&user).await?;
     if old.len()>=12 {return Err(AppError::bad("passkey quota reached"))}
@@ -173,7 +174,7 @@ pub async fn login_finish(State(state):State<AppState>,headers:HeaderMap,Json(bo
         .bind(&session_digest).bind(&user).bind(crypto::now()+7*86400)
         .execute(&mut *tx).await?;
     tx.commit().await?;
-    let next=mfa::new_session_target(&state,&user,&session_digest,"/",true).await?;
+    let next=mfa::new_session_target(&state,&user,&session_digest,"/",Some("passkey")).await?;
     let secure=if state.config.public_url.starts_with("https://"){"; Secure"}else{""};
     let cookie=format!("sso_session={session}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax{secure}");
     let mut response=Json(json!({"ok":true,"next":next})).into_response();
@@ -265,6 +266,7 @@ pub async fn remove(State(state):State<AppState>,headers:HeaderMap,Path(id):Path
 {
     auth::require_same_origin(&state,&headers)?;
     let user=auth::session_user(&state,&headers).await?;
+    mfa::require_recent_login(&state,&headers).await?;
     let changed=sqlx::query(&state.db.q("DELETE FROM passkeys WHERE credential_id=? AND user_id=?"))
         .bind(&id).bind(user).execute(&state.db.pool).await?;
     if changed.rows_affected()!=1 {return Err(AppError::forbidden())}
