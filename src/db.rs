@@ -42,6 +42,7 @@ impl Db {
             "CREATE TABLE IF NOT EXISTS users (id VARCHAR(191) PRIMARY KEY, name TEXT NOT NULL, email TEXT, avatar TEXT, created BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS identities (provider VARCHAR(191) NOT NULL, subject VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, PRIMARY KEY(provider,subject))",
             "CREATE TABLE IF NOT EXISTS clients (id VARCHAR(191) PRIMARY KEY, name TEXT NOT NULL, secret_hash VARCHAR(191), redirects TEXT NOT NULL, created BIGINT NOT NULL, enabled BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS client_owners (client_id VARCHAR(191) PRIMARY KEY, user_id VARCHAR(191) NOT NULL)",
             "CREATE TABLE IF NOT EXISTS auth_tx (state VARCHAR(191) PRIMARY KEY, data TEXT NOT NULL, expires BIGINT NOT NULL, used BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS codes (code_hash VARCHAR(191) PRIMARY KEY, client_id VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, redirect_uri TEXT NOT NULL, challenge TEXT NOT NULL, scope TEXT NOT NULL, expires BIGINT NOT NULL, used BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS pending_consents (id VARCHAR(191) PRIMARY KEY, user_id VARCHAR(191) NOT NULL, client_id VARCHAR(191) NOT NULL, redirect_uri TEXT NOT NULL, challenge TEXT NOT NULL, scope TEXT NOT NULL, downstream_state TEXT NOT NULL, expires BIGINT NOT NULL, used BIGINT NOT NULL)",
