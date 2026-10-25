@@ -4,6 +4,10 @@ Rust OAuth2 identity broker with a Chinese MD3-inspired management interface.
 
 > Development branch / pre-production. Do not use for sensitive production SSO until CI, provider integration tests, abuse controls and an independent security review are complete.
 
+## Development status
+
+This is an active development implementation. Merging the initial gateway to `main` does NOT mean it has passed an independent authentication security audit. Do not expose it as a production identity authority until credential recovery, provider fixtures, origin/TLS setup and migration/operational reviews have been completed.
+
 ## Features
 
 - Upstream Google and Telegram OIDC with signed ID token and issuer/audience/nonce validation; X OAuth2/PKCE using authenticated users/me; custom OIDC/OAuth2-userinfo provider configuration.
@@ -16,6 +20,14 @@ Rust OAuth2 identity broker with a Chinese MD3-inspired management interface.
 - Optional locally built WASM AES-GCM for encrypting local configuration drafts, not for concealing OAuth credentials.
 - Optional port fallback restricted to loopback interface.
 - Bounded, in-process per-TCP-peer IP and endpoint-group rate limits on login, authorization, callback, token, registration, consent, account and admin APIs; `Retry-After` on HTTP 429. Incoming `X-Forwarded-For` is intentionally never trusted.
+
+## Passkeys, second factor and account assurance
+
+- **WebAuthn Passkey (beta)**: register while signed in via `POST /passkeys/register/start` and `/finish`, with browser `navigator.credentials.create`; sign in using account UUID via `/passkeys/login/start` and `/finish` and `navigator.credentials.get`. Registration/login challenges are stored **server-side**, expire in 5 minutes, are atomically one-use, bind registration to the user's current session and bind login to an HttpOnly SameSite Strict flow cookie. Credential IDs are globally unique, and counters/backup metadata are updated after successful verification. Security settings are exposed in the MD3 WebUI.
+- **TOTP 2FA**: `POST /mfa/enroll/start` creates a sealed 20-byte secret with a 10-minute enrollment window. `POST /mfa/enroll/confirm` verifies a 6-digit code before enabling MFA and issues ten one-time, randomly generated recovery codes (shown only once). Verification accepts an authenticator code or an unused recovery code through `POST /mfa/verify`; TOTP steps cannot be reused. Disable requires a second-factor proof and revokes all sessions.
+- **Session policy**: accounts with enabled TOTP cannot use sessions obtained from Google/Telegram/X to approve OAuth consent, view account details, bind identities, or manage OAuth clients until the second factor is satisfied. WebAuthn Passkey authentication counts as a phishing-resistant verified session. Existing authenticated sessions can enter downstream OAuth consent without restarting an upstream OAuth login.
+- **Secret key**: set `SSO_MFA_ENCRYPTION_KEY` to the output of `openssl rand -hex 32` **before** enrolling TOTP. Never use an admin or client token as this key. Protect/back up this key; losing it makes stored TOTP secrets unreadable. Secrets use AES-256-GCM with the user ID as associated authenticated data. This secret is never shipped to the browser and should be held in a secrets manager in production.
+- **Limitations**: Passkey sign-in currently requires the stable account UUID from `/me` (account-discovery UI is not yet complete). This implementation does not provide passwords, SMS OTP, email magic links, admin-assisted recovery, resident-key conditional UI, per-factor administrative policies or full OIDC downstream issuance. A lost passkey with no other upstream identity can lock out an account. TOTP without independent backup cannot be recovered. Browser credentials and reverse-proxy origins require real-device and end-to-end tests.
 
 ## Local run
 
