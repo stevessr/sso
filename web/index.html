@@ -84,9 +84,38 @@ el('policy-create').onclick=async()=>{try{await api('/admin/policies',{method:'P
 el('mapping-preview').onclick=async()=>{try{const data=await api('/admin/mappings/'+encodeURIComponent(el('mapping-provider').value)+'/preview',{method:'POST',body:JSON.stringify({...readMap(),raw:JSON.parse(el('mapping-raw').value)})},auth());show('mapping-output',data)}catch(e){toast(e.message)}};
 el('mapping-save').onclick=async()=>{try{await api('/admin/mappings/'+encodeURIComponent(el('mapping-provider').value),{method:'PUT',body:JSON.stringify(readMap())},auth());toast('映射规则已保存')}catch(e){toast(e.message)}};
 el('logout').onclick=async()=>{try{await api('/session/logout',{method:'POST'});refreshProfile()}catch(e){toast(e.message)}};
-el('background-upload').onclick=async()=>{try{const file=el('background').files[0];if(!file)throw Error('请选择背景图片');const res=await fetch('/admin/background',{method:'POST',headers:{'Authorization':'Bearer '+auth(),'Content-Type':file.type},body:file});const obj=await res.json();if(!res.ok)throw Error(obj.error||'上传失败');applySeed(obj.seed);document.body.classList.add('has-wallpaper');el('theme-note').textContent='主题种子色 '+obj.seed+'（从图像提取的近似色调系统）';toast('背景图已更新')}catch(e){toast(e.message)}};
+el('background-upload').onclick=async()=>{try{const file=el('background').files[0];if(!file)throw Error('请选择背景图片');const res=await fetch('/admin/background',{method:'POST',headers:{'Authorization':'Bearer '+auth(),'Content-Type':file.type},body:file});const obj=await res.json();if(!res.ok)throw Error(obj.error||'上传失败');applySeed(obj.seed);applyMonet(obj.palette);document.body.classList.add('has-wallpaper');el('theme-note').textContent='Material HCT 动态色板已从图片生成';toast('背景图已更新')}catch(e){toast(e.message)}};
 function applySeed(seed){if(/^#[0-9a-f]{6}$/i.test(seed)){document.documentElement.style.setProperty('--seed',seed);document.documentElement.style.setProperty('--primary',seed)}}
-async function theme(){try{const r=await fetch('/admin/background',{method:'GET'});if(r.ok){document.body.classList.add('has-wallpaper');applySeed(r.headers.get('x-theme-seed')||'#6750a4')}}catch(_){}}
+function materialColor(value){
+ if(typeof value==='number')return '#'+(value & 0xffffff).toString(16).padStart(6,'0');
+ if(typeof value==='string'){
+   if(/^#[0-9a-f]{6}$/i.test(value))return value;
+   if(/^#[0-9a-f]{8}$/i.test(value))return '#'+value.slice(-6);
+   if(/^0x[0-9a-f]{8}$/i.test(value))return '#'+value.slice(-6);
+ }
+ return null
+}
+function applyMonet(theme){
+ const scheme=theme?.schemes?.[matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'];
+ if(!scheme)return;
+ const mappings={'primary':['primary'],'on-primary':['on_primary','onPrimary'],'surface':['surface'],
+   'surface-container':['surface_container','surfaceContainer'],
+   'surface-high':['surface_container_high','surfaceContainerHigh'],
+   'text':['on_surface','onSurface'],'outline':['outline']};
+ for(const [css,keys] of Object.entries(mappings)){
+   const v=keys.map(k=>materialColor(scheme[k])).find(Boolean);
+   if(v)document.documentElement.style.setProperty('--'+css,v)
+ }
+}
+async function theme(){
+ try{
+   const r=await fetch('/admin/background');if(r.ok){
+     document.body.classList.add('has-wallpaper');
+     applySeed(r.headers.get('x-theme-seed')||'#6750a4')
+   }
+   const p=await fetch('/theme');if(p.ok)applyMonet(await p.json())
+ }catch(_){}
+}
 async function cryptoWasm(){try{const w=await import('/wasm/sso_frontend_crypto.js');await w.default();return w}catch(_){throw Error('WASM 加密包尚未构建；请运行 wasm-pack build frontend-crypto --target web --out-dir ../web/wasm --release')}}
 el('draft-encrypt').onclick=async()=>{try{const w=await cryptoWasm();const data=JSON.stringify(readMap());el('draft-payload').value=w.encrypt_text(data,el('draft-pass').value);toast('草稿已在 WASM 中加密，请复制密文备份')}catch(e){toast(String(e))}};
 el('draft-decrypt').onclick=async()=>{try{const w=await cryptoWasm();const obj=JSON.parse(w.decrypt_text(el('draft-payload').value.trim(),el('draft-pass').value));if(typeof obj.script!=='string'||!obj.fields||typeof obj.fields!=='object')throw Error('解密结构无效');el('mapping-fields').value=JSON.stringify(obj.fields,null,2);el('mapping-script').value=obj.script;renderFlow();toast('本地草稿已解密，不会自动保存到服务端')}catch(e){toast(String(e))}};
