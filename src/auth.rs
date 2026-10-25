@@ -65,6 +65,11 @@ pub async fn authorize(State(state): State<AppState>, Query(q): Query<AuthorizeQ
         return Err(AppError::bad("authorization_code, PKCE S256 and state required"));
     }
     check_client(&state, &q.client_id, &q.redirect_uri).await?;
+    if let Some(scope) = &q.scope {
+        if scope.len() > 128 || scope.split_whitespace().any(|s| !["profile", "email"].contains(&s)) {
+            return Err(AppError::bad("unsupported scope"));
+        }
+    }
     let provider = q.provider.or_else(|| state.config.providers.first().map(|p| p.id.clone()))
         .ok_or_else(|| AppError::bad("no login providers configured"))?;
     begin(&state, &provider, Transaction {
@@ -226,10 +231,17 @@ async fn apply_policies(state: &AppState, source: &str, user: &str) -> AppResult
         match action.as_str() {
             "revoke" => { sqlx::query(&state.db.q("UPDATE tokens SET revoked=1 WHERE client_id=? AND user_id=?"))
                 .bind(&target).bind(user).execute(&state.db.pool).await?; }
-            "suspend" => { sqlx::query(&state.db.q("UPDATE tokens SET suspended_until=? WHERE client_id=? AND user_id=? AND revoked=0"))
-                .bind(crypto::now().saturating_add(duration)).bind(&target).bind(user).execute(&state.db.pool).await?; }
-            "resume" => { sqlx::query(&state.db.q("UPDATE tokens SET suspended_until=0 WHERE client_id=? AND user_id=? AND revoked=0"))
-                .bind(&target).bind(user).execute(&state.db.pool).await?; }
+            "suspend" => {
+                let until = crypto::now().saturating_add(duration);
+                state.db.set_app_suspension(user, &target, until).await?;
+                sqlx::query(&state.db.q("UPDATE tokens SET suspended_until=? WHERE client_id=? AND user_id=? AND revoked=0"))
+                    .bind(until).bind(&target).bind(user).execute(&state.db.pool).await?;
+            }
+            "resume" => {
+                state.db.set_app_suspension(user, &target, 0).await?;
+                sqlx::query(&state.db.q("UPDATE tokens SET suspended_until=0 WHERE client_id=? AND user_id=? AND revoked=0"))
+                    .bind(&target).bind(user).execute(&state.db.pool).await?;
+            }
             _ => {}
         }
     }
@@ -238,12 +250,50 @@ async fn apply_policies(state: &AppState, source: &str, user: &str) -> AppResult
 pub async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Json<Value>> {
     let bearer = headers.get(header::AUTHORIZATION).and_then(|h| h.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer ")).ok_or_else(AppError::unauthorized)?;
-    let row = sqlx::query(&state.db.q("SELECT u.id,u.name,u.email,u.avatar FROM tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=? AND t.expires>? AND t.revoked=0 AND t.suspended_until<=?"))
-        .bind(crypto::digest(bearer)).bind(crypto::now()).bind(crypto::now())
+    let row = sqlx::query(&state.db.q("SELECT u.id,u.name,u.email,u.avatar,t.scope FROM tokens t JOIN users u ON u.id=t.user_id JOIN clients c ON c.id=t.client_id LEFT JOIN app_access a ON a.client_id=t.client_id AND a.user_id=t.user_id WHERE t.token_hash=? AND t.expires>? AND t.revoked=0 AND c.enabled=1 AND t.suspended_until<=? AND COALESCE(a.suspended_until,0)<=?"))
+        .bind(crypto::digest(bearer)).bind(crypto::now()).bind(crypto::now()).bind(crypto::now())
         .fetch_optional(&state.db.pool).await?.ok_or_else(AppError::unauthorized)?;
+    let scope: String = row.try_get("scope")?;
+    let email = if scope.split_whitespace().any(|s| s == "email") {
+        row.try_get::<Option<String>,_>("email")?
+    } else { None };
     Ok(Json(json!({"sub":row.try_get::<String,_>("id")?,"name":row.try_get::<String,_>("name")?,
-        "email":row.try_get::<Option<String>,_>("email")?,"picture":row.try_get::<Option<String>,_>("avatar")?})))
+        "email":email,"picture":row.try_get::<Option<String>,_>("avatar")?})))
 }
+
+#[derive(Deserialize)]
+pub struct IntrospectionForm {
+    token: String,
+    #[serde(default)] token_type_hint: Option<String>,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+}
+pub async fn introspect(State(state): State<AppState>, headers: HeaderMap, Form(f): Form<IntrospectionForm>) -> AppResult<Json<Value>> {
+    let caller = authenticate_client(&state, &headers, f.client_id.as_deref(), f.client_secret.as_deref()).await?;
+    // Only confidential clients can introspect. Resource servers should be configured as
+    // confidential clients; tokens from other applications must never leak metadata.
+    let client = sqlx::query(&state.db.q("SELECT secret_hash FROM clients WHERE id=?"))
+        .bind(&caller).fetch_one(&state.db.pool).await?;
+    if client.try_get::<Option<String>,_>("secret_hash")?.is_none() { return Err(AppError::unauthorized()); }
+    let _ = f.token_type_hint; // Unknown hints are ignored as specified by RFC 7662.
+    if f.token.len() > 2048 || f.token.is_empty() { return Ok(Json(json!({"active": false}))); }
+    let row = sqlx::query(&state.db.q(
+        "SELECT t.user_id, t.scope, t.expires FROM tokens t \
+         LEFT JOIN app_access a ON a.user_id=t.user_id AND a.client_id=t.client_id \
+         WHERE t.token_hash=? AND t.client_id=? AND t.expires>? AND t.revoked=0 \
+         AND t.suspended_until<=? AND COALESCE(a.suspended_until,0)<=?"
+    )).bind(crypto::digest(&f.token)).bind(&caller)
+        .bind(crypto::now()).bind(crypto::now()).bind(crypto::now())
+        .fetch_optional(&state.db.pool).await?;
+    if let Some(row) = row {
+        Ok(Json(json!({"active":true, "client_id":caller, "sub":row.try_get::<String,_>("user_id")?,
+            "scope":row.try_get::<String,_>("scope")?, "exp":row.try_get::<i64,_>("expires")?,
+            "token_type":"Bearer"})))
+    } else {
+        Ok(Json(json!({"active":false})))
+    }
+}
+
 #[derive(Deserialize)]
 pub struct RevokeForm { token: String, client_id: Option<String>, client_secret: Option<String> }
 pub async fn revoke(State(state): State<AppState>, headers: HeaderMap, Form(form): Form<RevokeForm>) -> AppResult<Json<Value>> {
@@ -258,6 +308,7 @@ pub async fn metadata(State(state): State<AppState>) -> Json<Value> {
         "token_endpoint":format!("{origin}/oauth/token"),
         "userinfo_endpoint":format!("{origin}/oauth/userinfo"),
         "revocation_endpoint":format!("{origin}/oauth/revoke"),
+        "introspection_endpoint":format!("{origin}/oauth/introspect"),
         "registration_endpoint":format!("{origin}/connect/register"),
         "response_types_supported":["code"],"grant_types_supported":["authorization_code"],
         "code_challenge_methods_supported":["S256"],
@@ -265,8 +316,8 @@ pub async fn metadata(State(state): State<AppState>) -> Json<Value> {
 }
 fn cookie_value<'a>(headers: &'a HeaderMap, key: &str) -> Option<&'a str> {
     let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
-    cookie.split(';').find_map(|part| part.trim().split_once('='))
-        .filter(|(k, _)| *k == key).map(|(_, v)| v)
+    cookie.split(';').filter_map(|part| part.trim().split_once('='))
+        .find(|(k, _)| *k == key).map(|(_, v)| v)
 }
 pub(crate) async fn session_user(state: &AppState, headers: &HeaderMap) -> AppResult<String> {
     let token = cookie_value(headers, "sso_session").ok_or_else(AppError::unauthorized)?;
