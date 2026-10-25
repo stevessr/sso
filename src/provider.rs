@@ -24,14 +24,14 @@ pub async fn exchange(state: &AppState, provider: &Provider, code: &str, verifie
     let request = if provider.token_auth_basic {
         state.http.post(&provider.token_url)
             .basic_auth(&provider.client_id, Some(&provider.client_secret))
-            .form(&form)
+            .form(&form).header(reqwest::header::ACCEPT, "application/json")
     } else {
         let full_form = [
             ("grant_type", "authorization_code"), ("code", code),
             ("redirect_uri", callback.as_str()), ("client_id", provider.client_id.as_str()),
             ("code_verifier", verifier), ("client_secret", provider.client_secret.as_str()),
         ];
-        state.http.post(&provider.token_url).form(&full_form)
+        state.http.post(&provider.token_url).form(&full_form).header(reqwest::header::ACCEPT, "application/json")
     };
     let response = request.send().await.map_err(|_| AppError::upstream())?;
     if !response.status().is_success() { return Err(AppError::upstream()); }
@@ -104,12 +104,16 @@ fn run_script(script: &str, input: &Value) -> AppResult<Value> {
 
 pub async fn normalize(state: &AppState, provider: &Provider, raw: Value) -> AppResult<Profile> {
     let sub = raw["sub"].as_str().or_else(|| raw["id"].as_str())
-        .ok_or_else(AppError::upstream)?.to_owned();
+        .map(str::to_owned)
+        .or_else(|| raw["id"].as_u64().map(|n|n.to_string()))
+        .ok_or_else(AppError::upstream)?;
     if sub.len() > 191 { return Err(AppError::upstream()); }
     let name = raw["name"].as_str().or_else(|| raw["first_name"].as_str())
-        .or_else(|| raw["username"].as_str()).unwrap_or(&sub).to_owned();
-    let email = raw["email"].as_str().filter(|_| raw["email_verified"] == true).map(str::to_owned);
-    let avatar = raw["picture"].as_str().or_else(|| raw["profile_image_url"].as_str()).map(str::to_owned);
+        .or_else(|| raw["username"].as_str()).or_else(||raw["login"].as_str()).unwrap_or(&sub).to_owned();
+    let email = raw["email"].as_str()
+        .filter(|_|raw["email_verified"] == true || (provider.id=="discord" && raw["verified"]==true))
+        .map(str::to_owned);
+    let avatar = raw["picture"].as_str().or_else(|| raw["profile_image_url"].as_str()).or_else(||raw["avatar_url"].as_str()).map(str::to_owned);
     let verified_email = email.clone();
     let row = sqlx::query(&state.db.q("SELECT fields, script FROM mappings WHERE provider=?"))
         .bind(&provider.id).fetch_optional(&state.db.pool).await?;
@@ -150,4 +154,52 @@ pub async fn preview(state: &AppState, provider_id: &str, raw: Value, fields: Ha
             .await.map_err(|_| AppError::bad("mapping thread unavailable"))??;
     }
     Ok(json!({"provider":provider.id, "mapped_fields":out, "subject_mutable":false}))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    async fn state() -> AppState {
+        let db=Arc::new(crate::db::Db::open("sqlite::memory:").await.unwrap());
+        let config=crate::config::Config{
+            public_url:"http://localhost:3000".into(),
+            bind:"127.0.0.1:3000".parse().unwrap(),auto_port:false,
+            db_url:"sqlite::memory:".into(),admin_token_hash:"unused".into(),
+            registration_token_hash:None,providers:vec![]
+        };
+        AppState{config:Arc::new(config),db,http:reqwest::Client::new()}
+    }
+    fn provider(id:&str)->Provider {
+        Provider{
+            id:id.into(),label:id.into(),kind:ProviderKind::OAuthUserinfo,
+            client_id:"test".into(),client_secret:"test".into(),
+            authorize_url:"https://example.test/authorize".into(),
+            token_url:"https://example.test/token".into(),
+            issuer:None,jwks_url:None,userinfo_url:Some("https://example.test/me".into()),
+            scopes:"profile".into(),token_auth_basic:false
+        }
+    }
+    #[tokio::test]
+    async fn github_integer_subject_is_stable_and_unverified_email_is_suppressed() {
+        let s=state().await;
+        let profile=normalize(&s,&provider("github"),json!({
+            "id":12345,"login":"octocat","email":"not-verified@example.test",
+            "avatar_url":"https://avatars.example.test/octocat.png"
+        })).await.unwrap();
+        assert_eq!(profile.subject,"12345");
+        assert_eq!(profile.name,"octocat");
+        assert!(profile.email.is_none());
+    }
+    #[tokio::test]
+    async fn discord_verified_claim_can_supply_email_but_not_change_subject() {
+        let s=state().await;
+        let profile=normalize(&s,&provider("discord"),json!({
+            "id":"123456789123456789","username":"example",
+            "email":"verified@example.test","verified":true
+        })).await.unwrap();
+        assert_eq!(profile.subject,"123456789123456789");
+        assert_eq!(profile.email.as_deref(),Some("verified@example.test"));
+    }
 }

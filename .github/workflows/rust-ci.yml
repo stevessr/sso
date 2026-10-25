@@ -45,3 +45,6 @@ jobs:
         run: |
           node --check web/assets/app.js
           node --check web/assets/consent.js
+          node --check web/assets/mfa.js
+          node --check web/assets/security.js
+          node --check web/assets/login-choice.js

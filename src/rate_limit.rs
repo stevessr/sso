@@ -37,6 +37,15 @@ fn policy(path: &str) -> Option<(Kind, u32, Duration)> {
             Some((Kind::Account, 40, Duration::from_secs(5 * minute))),
         path if path.starts_with("/auth/callback/") =>
             Some((Kind::Callback, 30, Duration::from_secs(5 * minute))),
+        path if path.starts_with("/mfa/verify") || path.starts_with("/mfa/enroll/")
+            || path.starts_with("/mfa/disable") =>
+            Some((Kind::Account, 12, Duration::from_secs(5 * minute))),
+        path if path.starts_with("/passkeys/stepup/") =>
+            Some((Kind::Account, 12, Duration::from_secs(5 * minute))),
+        path if path.starts_with("/passkeys/login/") =>
+            Some((Kind::Start, 30, Duration::from_secs(5 * minute))),
+        path if path.starts_with("/passkeys/register/") || path.starts_with("/me/passkeys") =>
+            Some((Kind::Account, 25, Duration::from_secs(5 * minute))),
         path if path.starts_with("/login/") =>
             Some((Kind::Start, 30, Duration::from_secs(5 * minute))),
         path if path.starts_with("/admin/") =>

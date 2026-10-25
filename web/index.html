@@ -13,6 +13,18 @@
 <section class="intro-section"><div class="eyebrow">Unified identity control plane</div><h1>一个身份入口，连接所有应用。</h1><p class="description">连接 Google、Telegram、X 及自定义提供商。通过统一 OAuth2 接口授权应用，并管理绑定关系、字段映射、联动策略和客户端注册。</p></section>
 <div class="grid">
 <section class="card"><h2>我的身份</h2><p class="small">登入后可绑定更多第三方账号；绑定不会自动合并其他已有用户的身份。</p><div id="user">尚未登录</div><div id="providers" class="provider-links"></div><div id="links" class="stack"></div><h3 class="space-top-20">已连接的应用</h3><div id="apps" class="stack"></div><div class="actions"><button class="outline" id="logout">退出当前会话</button></div></section>
+<section class="card"><h2>Passkey · 无密码登录</h2>
+<p class="small">支持 WebAuthn 平台验证器、硬件安全密钥和同步通行密钥。请先用第三方账户登录，然后注册至少一枚 Passkey。当前登录入口使用账户 ID（可从「我的身份」复制）。</p>
+<label for="passkey-user-id">登录账户 ID</label><input id="passkey-user-id" autocomplete="username" placeholder="账户 UUID">
+<div class="actions"><button id="passkey-login">使用 Passkey 登录</button><button class="tonal" id="passkey-enroll">为当前账户添加 Passkey</button></div>
+<div id="passkey-list" class="stack"></div></section>
+<section class="card"><h2>双重验证 · TOTP</h2>
+<p class="small">设置动态验证器后，Google、Telegram、X 等第三方登录需要完成二次验证。恢复码各只能使用一次。</p>
+<div class="actions"><button id="totp-start">设置验证器</button><button class="outline" id="totp-status">查看验证状态</button></div>
+<pre id="totp-setup-output" style="white-space:pre-wrap">尚未设置动态验证器。</pre>
+<label for="totp-code">验证器动态码 / 恢复码</label><input id="totp-code" autocomplete="one-time-code" placeholder="6 位动态码">
+<div class="actions"><button class="tonal" id="totp-confirm">确认启用并生成恢复码</button><button class="danger" id="totp-disable">验证并停用 TOTP</button></div>
+<p class="small">恢复码只在启用时显示一次，请离线保存。TOTP 服务器密钥需要独立的 SSO_MFA_ENCRYPTION_KEY。</p></section>
 <section class="card"><h2>管理员控制台</h2><p class="small">使用部署时配置的管理员令牌。令牌只保存在本页面的运行内存，不写入浏览器持久存储。</p><label for="admin-token">管理员令牌</label><input id="admin-token" type="password" autocomplete="off" placeholder="SSO_ADMIN_TOKEN"><div class="actions"><button id="admin-refresh">读取客户端和策略</button></div><h3 class="space-top-20">背景图与动态配色</h3><input id="background" type="file" accept="image/png,image/jpeg,image/webp"><div class="actions"><button class="tonal" id="background-upload">上传并提取主题色</button></div><p id="theme-note" class="small">从背景图提取种子色，形成近似 Material tonal palette。基于 Material Color Utilities 的 HCT 动态色板。</p></section>
 <section class="card"><h2>注册 OAuth2 客户端</h2><label>应用名称</label><input id="client-name" placeholder="My App"><label>回调地址（每行一个）</label><textarea id="client-redirects" placeholder="https://app.example.com/callback"></textarea><label><input id="client-public" type="checkbox" class="inline-check"> 公共客户端（PKCE，无 client_secret）</label><label>自助注册访问令牌（可选，留空使用管理员令牌）</label><input id="registration-token" type="password" autocomplete="off"><div class="actions"><button id="client-create">使用初始化令牌注册</button><button class="tonal" id="client-own-create">使用当前登录账户注册</button></div><p class="small">当前账户可自助创建最多 10 个专属客户端，无需共享管理员令牌。登录后仅能管理自己注册的客户端。</p><pre id="client-output" aria-live="polite">凭证仅在创建时返回，请妥善保存。</pre><h3 class="space-top-20">我注册的客户端</h3><div id="my-clients" class="stack"><p class="small">登录后显示。</p></div></section>
 <section class="card"><h2>跨应用联动</h2><p class="small">某个客户端换取访问令牌成功后，对同一用户的另一客户端执行操作。临时停用自动过期；永久吊销不可恢复旧令牌。</p>
@@ -25,5 +37,6 @@
 </main>
 <div id="status" role="status" hidden></div>
 <script src="/assets/app.js" defer></script>
+<script src="/assets/security.js" defer></script>
 </body>
 </html>

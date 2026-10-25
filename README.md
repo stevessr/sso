@@ -4,9 +4,13 @@ Rust OAuth2 identity broker with a Chinese MD3-inspired management interface.
 
 > Development branch / pre-production. Do not use for sensitive production SSO until CI, provider integration tests, abuse controls and an independent security review are complete.
 
+## Development status
+
+This is an active development implementation. Merging the initial gateway to `main` does NOT mean it has passed an independent authentication security audit. Do not expose it as a production identity authority until credential recovery, provider fixtures, origin/TLS setup and migration/operational reviews have been completed.
+
 ## Features
 
-- Upstream Google and Telegram OIDC with signed ID token and issuer/audience/nonce validation; X OAuth2/PKCE using authenticated users/me; custom OIDC/OAuth2-userinfo provider configuration.
+- Upstream Google and Telegram OIDC with signed ID token and issuer/audience/nonce validation; X, GitHub and Discord OAuth2/PKCE using authenticated userinfo; custom OIDC/OAuth2-userinfo provider configuration.
 - Downstream OAuth2 Authorization Code + PKCE S256, explicit user consent (allow/deny), one-time authorization codes, opaque bearer access tokens, scope-restricted userinfo, RFC7662 introspection and revocation. Optional explicit `offline_access` consent enables a 30-day absolute-lifetime, one-time-use rotating refresh-token family. Reuse or grant revocation invalidates the whole family and its linked access tokens.
 - SQLite default; PostgreSQL and MySQL through SQLx runtime AnyPool.
 - Gated machine dynamic client registration (admin or initialization bearer token), plus signed-in user self-service client registration (10 per account, isolated ownership, lifecycle enable/disable and confidential-secret rotation). Strict redirect allowlists, user-managed application access/revocation and third-party account binding/unbinding; admin disable/enable, rotate client secrets and remove linked-app policies.
@@ -16,6 +20,14 @@ Rust OAuth2 identity broker with a Chinese MD3-inspired management interface.
 - Optional locally built WASM AES-GCM for encrypting local configuration drafts, not for concealing OAuth credentials.
 - Optional port fallback restricted to loopback interface.
 - Bounded, in-process per-TCP-peer IP and endpoint-group rate limits on login, authorization, callback, token, registration, consent, account and admin APIs; `Retry-After` on HTTP 429. Incoming `X-Forwarded-For` is intentionally never trusted.
+
+## Passkeys, second factor and account assurance
+
+- **WebAuthn Passkey (beta)**: register while signed in via `POST /passkeys/register/start` and `/finish`, with browser `navigator.credentials.create`; sign in using account UUID via `/passkeys/login/start` and `/finish` and `navigator.credentials.get`. Registration/login challenges are stored **server-side**, expire in 5 minutes, are atomically one-use, bind registration to the user's current session and bind login to an HttpOnly SameSite Strict flow cookie. Creating/removing passkeys and starting TOTP enrollment require an authentication assurance no older than ten minutes; OAuth and WebAuthn login both record an assurance timestamp. Credential IDs are globally unique, and counters/backup metadata are updated after successful verification. Security settings are exposed in the MD3 WebUI.
+- **TOTP 2FA**: `POST /mfa/enroll/start` creates a sealed 20-byte secret with a 10-minute enrollment window. `POST /mfa/enroll/confirm` verifies a 6-digit code before enabling MFA and issues ten one-time, randomly generated recovery codes (shown only once). Verification accepts an authenticator code or an unused recovery code through `POST /mfa/verify`; TOTP steps cannot be reused. A registered Passkey can instead perform `POST /passkeys/stepup/start` and `/finish` from the MFA page, binding its signed assertion to the current pending session. Only after step-up is OAuth consent resumed. Disable requires a second-factor proof and revokes all sessions.
+- **Session policy**: accounts with enabled TOTP cannot use sessions obtained from Google/Telegram/X to approve OAuth consent, view account details, bind identities, or manage OAuth clients until the second factor is satisfied. WebAuthn Passkey authentication counts as a phishing-resistant verified session. Existing authenticated sessions can enter downstream OAuth consent without restarting an upstream OAuth login.
+- **Secret key**: set `SSO_MFA_ENCRYPTION_KEY` to the output of `openssl rand -hex 32` **before** enrolling TOTP. Never use an admin or client token as this key. Protect/back up this key; losing it makes stored TOTP secrets unreadable. Secrets use AES-256-GCM with the user ID as associated authenticated data. This secret is never shipped to the browser and should be held in a secrets manager in production.
+- **Limitations**: Passkey sign-in currently requires the stable account UUID from `/me` (account-discovery UI is not yet complete). This implementation does not provide passwords, SMS OTP, email magic links, admin-assisted recovery, resident-key conditional UI, per-factor administrative policies or full OIDC downstream issuance. A lost passkey with no other upstream identity can lock out an account. TOTP without independent backup cannot be recovered. Further required: browser-based and platform authenticator integration tests; second-factor credential recovery policies; origin/reverse-proxy validation; audited recovery and account-lockout UX. Browser credentials and reverse-proxy origins require real-device and end-to-end tests.
 
 ## Local run
 
@@ -45,7 +57,7 @@ For a public deployment set `SSO_PUBLIC_URL` to the **exact HTTPS origin** serve
 
 ## Downstream OAuth2 flow
 
-1. Browser redirects to GET /oauth/authorize with response_type=code, client_id, exact redirect_uri, state, code_challenge, code_challenge_method=S256, and optional provider=google|telegram|x.
+1. Browser redirects to GET /oauth/authorize with response_type=code, client_id, exact redirect_uri, state, code_challenge, code_challenge_method=S256. Without a `provider` parameter, the gateway now shows a first-party method chooser (Passkey, Google, Telegram, X, GitHub, Discord and configured custom providers); choosing Passkey signs into the gateway and returns to the **same validated authorization request** for consent. Clients can also request a specific configured upstream provider using `provider=google|telegram|x|github|discord|<custom-id>`.
 2. Server authenticates user with an upstream provider, verifies upstream identity, and displays a first-party consent screen explaining the client and requested permissions. Declining sends access_denied; approving issues a short-lived one-time authorization code with the original state.
 3. Client POSTs to /oauth/token with grant_type=authorization_code, code, redirect_uri, code_verifier and client credentials (Basic auth or form client_id/client_secret). Request `scope=profile email offline_access` during authorization **only if** offline refresh is needed; the consent page explicitly discloses it.
 4. Call GET /oauth/userinfo with Authorization: Bearer ACCESS_TOKEN. Only granted profile/email scopes are returned. If `offline_access` was approved, POST `grant_type=refresh_token&refresh_token=...&client_id=...` to `/oauth/token` (plus client secret for confidential clients), **atomically replace** the stored refresh token after each response, and treat `invalid_grant` as a requirement to sign in again. Refreshing does not extend the original absolute 30-day grant expiry. Revoke access or refresh tokens with POST /oauth/revoke. Confidential OAuth clients can POST to /oauth/introspect (token, client_id, client_secret) to verify only their own access tokens; public PKCE clients cannot introspect.
@@ -72,7 +84,7 @@ PostgreSQL: DATABASE_URL=postgres://user:pass@localhost:5432/sso
 
 MySQL: DATABASE_URL=mysql://user:pass@localhost:3306/sso
 
-Configure GOOGLE_CLIENT_ID/SECRET, TELEGRAM_CLIENT_ID/SECRET and X_CLIENT_ID/SECRET. For Telegram, add the OAuth callback URL in BotFather. For custom providers supply SSO_PROVIDERS_JSON containing objects with id, label, kind (oidc or oauth_userinfo), client_id, client_secret, authorize_url, token_url, scopes, token_auth_basic, issuer, jwks_url or userinfo_url as appropriate. Remote endpoints require HTTPS.
+Configure GOOGLE_CLIENT_ID/SECRET, TELEGRAM_CLIENT_ID/SECRET, X_CLIENT_ID/SECRET, GITHUB_CLIENT_ID/SECRET and DISCORD_CLIENT_ID/SECRET. For Telegram, add the OAuth callback URL in BotFather. For custom providers supply SSO_PROVIDERS_JSON containing objects with id, label, kind (oidc or oauth_userinfo), client_id, client_secret, authorize_url, token_url, scopes, token_auth_basic, issuer, jwks_url or userinfo_url as appropriate. Remote endpoints require HTTPS.
 
 SSO_AUTO_PORT=true tries the next 20 TCP ports only for a loopback bind, rewriting the localhost public URL when necessary. Do not use auto-port selection for public callbacks.
 

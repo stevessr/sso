@@ -59,7 +59,7 @@ async fn check_client(state: &AppState, id: &str, redirect: &str) -> AppResult<(
     if !redirect_uris.iter().any(|v| v == redirect) { return Err(AppError::bad("unregistered redirect URI")); }
     Ok(())
 }
-pub async fn authorize(State(state): State<AppState>, Query(q): Query<AuthorizeQuery>) -> AppResult<Response> {
+pub async fn authorize(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<AuthorizeQuery>) -> AppResult<Response> {
     if q.response_type != "code" || q.code_challenge_method != "S256"
         || !crypto::valid_pkce(&q.code_challenge) || q.state.len() < 16 || q.state.len() > 512 {
         return Err(AppError::bad("authorization_code, PKCE S256 and state required"));
@@ -69,6 +69,22 @@ pub async fn authorize(State(state): State<AppState>, Query(q): Query<AuthorizeQ
         if scope.len() > 128 || scope.trim().is_empty() || scope.split_whitespace().any(|s| !["profile", "email", "offline_access"].contains(&s)) {
             return Err(AppError::bad("unsupported scope"));
         }
+    }
+    // An already-verified first-party session (including a successful Passkey
+    // login) can proceed to consent without forcing a second upstream login.
+    if let Ok(user) = session_user(&state,&headers).await {
+        let request_id=crypto::random_token();
+        sqlx::query(&state.db.q("INSERT INTO pending_consents (id,user_id,client_id,redirect_uri,challenge,scope,downstream_state,expires,used) VALUES (?,?,?,?,?,?,?,?,0)"))
+            .bind(&request_id).bind(&user).bind(&q.client_id).bind(&q.redirect_uri)
+            .bind(&q.code_challenge).bind(q.scope.as_deref().unwrap_or("profile"))
+            .bind(&q.state).bind(crypto::now()+300).execute(&state.db.pool).await?;
+        return Ok(Redirect::to(&format!("/consent?request={request_id}")).into_response());
+    }
+    // No provider forced by the client: display a first-party login choice.
+    // Passkey login can establish a verified session here; on reload this
+    // same validated authorization request proceeds directly to consent.
+    if q.provider.is_none() {
+        return Ok(axum::response::Html(include_str!("../web/login-choice.html")).into_response());
     }
     let provider = q.provider.or_else(|| state.config.providers.first().map(|p| p.id.clone()))
         .ok_or_else(|| AppError::bad("no login providers configured"))?;
@@ -154,7 +170,9 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
                 .execute(&state.db.pool).await?;
             let secure = if state.config.public_url.starts_with("https://") { "; Secure" } else { "" };
             let cookie = format!("sso_session={session}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax{secure}");
-            Ok(([(header::SET_COOKIE,cookie)],Redirect::to(&format!("/consent?request={request_id}"))).into_response())
+            let next=crate::mfa::new_session_target(&state,&user_id,&crypto::digest(&session),
+                &format!("/consent?request={request_id}"),None).await?;
+            Ok(([(header::SET_COOKIE,cookie)],Redirect::to(&next)).into_response())
         },
         "login" | "link" => {
             let session = crypto::random_token();
@@ -163,7 +181,12 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
                 .execute(&state.db.pool).await?;
             let secure = if state.config.public_url.starts_with("https://") { "; Secure" } else { "" };
             let cookie = format!("sso_session={session}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax{secure}");
-            Ok(([(header::SET_COOKIE,cookie)],Redirect::to("/")).into_response())
+            // Linking starts from an already assured session, so carry the
+            // second-factor assurance into the replacement session.
+            let verified_link=tx.mode=="link";
+            let next=crate::mfa::new_session_target(&state,&user_id,&crypto::digest(&session),
+                "/",if verified_link {Some("linked")}else{None}).await?;
+            Ok(([(header::SET_COOKIE,cookie)],Redirect::to(&next)).into_response())
         }
         _ => Err(AppError::bad("unknown auth transaction"))
     }?;
@@ -421,12 +444,18 @@ fn cookie_value<'a>(headers: &'a HeaderMap, key: &str) -> Option<&'a str> {
     cookie.split(';').filter_map(|part| part.trim().split_once('='))
         .find(|(k, _)| *k == key).map(|(_, v)| v)
 }
-pub(crate) async fn session_user(state: &AppState, headers: &HeaderMap) -> AppResult<String> {
+pub(crate) async fn session_user_raw(state: &AppState, headers: &HeaderMap) -> AppResult<String> {
     let token = cookie_value(headers, "sso_session").ok_or_else(AppError::unauthorized)?;
     let row = sqlx::query(&state.db.q("SELECT user_id FROM sessions WHERE token_hash=? AND expires>?"))
         .bind(crypto::digest(token)).bind(crypto::now()).fetch_optional(&state.db.pool).await?
         .ok_or_else(AppError::unauthorized)?;
     Ok(row.try_get("user_id")?)
+}
+pub(crate) async fn session_user(state: &AppState, headers: &HeaderMap) -> AppResult<String> {
+    let user=session_user_raw(state,headers).await?;
+    let digest=crate::mfa::cookie_digest(headers)?;
+    crate::mfa::enforce_session(state,&user,&digest).await?;
+    Ok(user)
 }
 pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Json<Value>> {
     let id=session_user(&state,&headers).await?;

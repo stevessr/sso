@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>双重验证 · SSO</title>
+<link rel="stylesheet" href="/assets/app.css"></head>
+<body><main style="max-width:560px;margin:6vh auto;padding:24px">
+<section class="card">
+<h1>双重验证</h1>
+<p class="description">输入身份验证器中的 6 位动态码，或使用一枚尚未使用过的恢复码。验证后才会完成本次登录与应用授权。</p>
+<label for="mfa-code">动态码或恢复码</label>
+<input id="mfa-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="128" placeholder="6 位动态码 / 恢复码">
+<div class="actions"><button id="mfa-submit">验证并继续</button><button id="mfa-passkey" class="tonal">使用 Passkey 验证</button><a class="button outline" href="/">返回首页</a></div>
+<p class="small" id="mfa-error" role="alert"></p>
+</section></main><script src="/assets/mfa.js" defer></script></body></html>
