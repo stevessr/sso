@@ -12,7 +12,7 @@ async function load(){
  byId('client-id').textContent=v.client_id;
  byId('redirect').textContent=v.redirect_uri;
  const scope=byId('scopes');scope.replaceChildren();
- for(const name of v.scope.split(/\s+/).filter(Boolean)){const chip=document.createElement('span');chip.textContent=name==='email'?'读取已验证邮箱':name==='profile'?'读取个人资料':name;scope.append(chip)}
+ for(const name of v.scope.split(/\s+/).filter(Boolean)){const chip=document.createElement('span');chip.textContent=name==='email'?'读取已验证邮箱':name==='profile'?'读取个人资料':name==='offline_access'?'允许应用离线续期访问（最长 30 天，令牌轮换）':name;scope.append(chip)}
  byId('request-value').value=id;byId('allow').disabled=false;byId('deny').disabled=false;
  }catch(e){error(e.message)}
 }
