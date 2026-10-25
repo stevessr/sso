@@ -162,6 +162,11 @@ pub async fn background_upload(State(state): State<AppState>, headers: HeaderMap
         .into_dimensions().map_err(|_| AppError::bad("invalid image dimensions"))?;
     if (dims.0 as u64)*(dims.1 as u64)>16_000_000 { return Err(AppError::bad("image exceeds 16 megapixels")); }
     let decoded=image::load_from_memory(&bytes).map_err(|_|AppError::bad("cannot decode image"))?;
+    // Material Color Utilities: quantization + ranking + HCT tonal schemes.
+    let material_theme = material_color_utils::theme_from_image(&decoded.thumbnail(160,160))
+        .call().map_err(|_| AppError::bad("unable to extract Material theme from image"))?;
+    let palette = serde_json::to_value(&material_theme)
+        .map_err(|_| AppError::bad("unable to serialize Material theme"))?;
     let small=decoded.thumbnail(32,32).to_rgb8();
     let (mut r,mut g,mut b)=(0u64,0u64,0u64);
     for p in small.pixels() { r+=p[0] as u64;g+=p[1] as u64;b+=p[2] as u64; }
@@ -172,7 +177,8 @@ pub async fn background_upload(State(state): State<AppState>, headers: HeaderMap
     tokio::fs::rename("data/background.upload","data/background.bin").await.map_err(|_|AppError::bad("cannot publish image"))?;
     tokio::fs::write("data/background.mime",mime).await.map_err(|_|AppError::bad("cannot store image metadata"))?;
     tokio::fs::write("data/theme.seed",&seed).await.map_err(|_|AppError::bad("cannot store theme seed"))?;
-    Ok(Json(json!({"ok":true,"seed":seed,"width":dims.0,"height":dims.1})))
+    tokio::fs::write("data/theme.json",palette.to_string()).await.map_err(|_|AppError::bad("cannot store Monet palette"))?;
+    Ok(Json(json!({"ok":true,"seed":seed,"palette":palette,"width":dims.0,"height":dims.1})))
 }
 pub async fn background() -> AppResult<Response> {
     let data=tokio::fs::read("data/background.bin").await.map_err(|_|AppError::bad("no background uploaded"))?;
@@ -182,4 +188,11 @@ pub async fn background() -> AppResult<Response> {
     response.headers_mut().insert(header::CONTENT_TYPE,mime.parse().map_err(|_|AppError::bad("bad content type"))?);
     response.headers_mut().insert("x-theme-seed",seed.parse().map_err(|_|AppError::bad("bad seed"))?);
     Ok(response)
+}
+
+pub async fn theme() -> AppResult<Json<Value>> {
+    let json=tokio::fs::read_to_string("data/theme.json").await
+        .map_err(|_| AppError::bad("no Material theme uploaded"))?;
+    let data=serde_json::from_str(&json).map_err(|_|AppError::bad("invalid Material theme"))?;
+    Ok(Json(data))
 }
