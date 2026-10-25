@@ -143,16 +143,21 @@ pub async fn login_finish(State(state):State<AppState>,headers:HeaderMap,Json(bo
     let mut saved=credentials(&state,&user).await?;
     let mut updated=None;
     for (id,passkey) in &mut saved {
+        let original=serde_json::to_string(passkey).map_err(|_|AppError::bad("passkey serialization failed"))?;
         if passkey.update_credential(&outcome).is_some() {
-            updated=Some((id.clone(),serde_json::to_string(passkey)
+            updated=Some((id.clone(),original,serde_json::to_string(passkey)
                 .map_err(|_|AppError::bad("passkey serialization failed"))?));
             break;
         }
     }
-    let (id,updated_key)=updated.ok_or_else(AppError::unauthorized)?;
+    let (id,original_key,updated_key)=updated.ok_or_else(AppError::unauthorized)?;
     let mut tx=state.db.pool.begin().await?;
-    sqlx::query(&state.db.q("UPDATE passkeys SET credential_json=? WHERE credential_id=? AND user_id=?"))
-        .bind(updated_key).bind(id).bind(&user).execute(&mut *tx).await?;
+    // Prevent concurrent assertions from silently overwriting authenticator
+    // counters or backup-state updates made by another request.
+    let updated=sqlx::query(&state.db.q("UPDATE passkeys SET credential_json=? WHERE credential_id=? AND user_id=? AND credential_json=?"))
+        .bind(updated_key).bind(id).bind(&user).bind(original_key)
+        .execute(&mut *tx).await?;
+    if updated.rows_affected()!=1 {return Err(AppError::bad("passkey credential changed; retry"))}
     let session=crypto::random_token();
     let session_digest=crypto::digest(&session);
     sqlx::query(&state.db.q("INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,?,?)"))
