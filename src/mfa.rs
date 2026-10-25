@@ -143,6 +143,11 @@ pub async fn enroll_confirm(State(state):State<AppState>,headers:HeaderMap,Json(
     // Enrollment immediately invalidates every OTHER pre-enrollment session.
     sqlx::query(&state.db.q("DELETE FROM sessions WHERE user_id=? AND token_hash<>?"))
         .bind(&user).bind(&digest).execute(&mut *tx).await?;
+    // Enabling 2FA invalidates grants minted before the factor was required.
+    sqlx::query(&state.db.q("UPDATE tokens SET revoked=1 WHERE user_id=?"))
+        .bind(&user).execute(&mut *tx).await?;
+    sqlx::query(&state.db.q("UPDATE refresh_tokens SET revoked=1 WHERE user_id=?"))
+        .bind(&user).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(json!({"enabled":true,"recovery_codes":recovery})))
 }
