@@ -25,7 +25,7 @@ struct Transaction {
     downstream_state: Option<String>, challenge: Option<String>,
     scope: String, link_user: Option<String>
 }
-async fn begin(state: &AppState, provider_id: &str, mut tx: Transaction) -> AppResult<Redirect> {
+async fn begin(state: &AppState, provider_id: &str, mut tx: Transaction) -> AppResult<Response> {
     let p = state.config.provider(provider_id).ok_or_else(|| AppError::bad("unknown provider"))?;
     let upstream_state = crypto::random_token();
     tx.verifier = crypto::random_token();
@@ -46,7 +46,9 @@ async fn begin(state: &AppState, provider_id: &str, mut tx: Transaction) -> AppR
             .append_pair("code_challenge_method","S256");
         if matches!(p.kind, crate::config::ProviderKind::Oidc) { q.append_pair("nonce",&tx.nonce); }
     }
-    Ok(Redirect::to(url.as_str()))
+    let secure = if state.config.public_url.starts_with("https://") { "; Secure" } else { "" };
+    let cookie = format!("sso_flow={upstream_state}; HttpOnly; Path=/; Max-Age=300; SameSite=Lax{secure}");
+    Ok(([(header::SET_COOKIE, cookie)], Redirect::to(url.as_str())).into_response())
 }
 async fn check_client(state: &AppState, id: &str, redirect: &str) -> AppResult<()> {
     let row = sqlx::query(&state.db.q("SELECT redirects, enabled FROM clients WHERE id=?"))
@@ -57,7 +59,7 @@ async fn check_client(state: &AppState, id: &str, redirect: &str) -> AppResult<(
     if !redirect_uris.iter().any(|v| v == redirect) { return Err(AppError::bad("unregistered redirect URI")); }
     Ok(())
 }
-pub async fn authorize(State(state): State<AppState>, Query(q): Query<AuthorizeQuery>) -> AppResult<Redirect> {
+pub async fn authorize(State(state): State<AppState>, Query(q): Query<AuthorizeQuery>) -> AppResult<Response> {
     if q.response_type != "code" || q.code_challenge_method != "S256"
         || !crypto::valid_pkce(&q.code_challenge) || q.state.len() < 16 || q.state.len() > 512 {
         return Err(AppError::bad("authorization_code, PKCE S256 and state required"));
@@ -72,7 +74,7 @@ pub async fn authorize(State(state): State<AppState>, Query(q): Query<AuthorizeQ
         scope:q.scope.unwrap_or_else(|| "profile".into()),link_user:None
     }).await
 }
-pub async fn login(State(state): State<AppState>, Path(provider): Path<String>) -> AppResult<Redirect> {
+pub async fn login(State(state): State<AppState>, Path(provider): Path<String>) -> AppResult<Response> {
     begin(&state, &provider, Transaction {
         mode:"login".into(),provider:String::new(),verifier:String::new(),nonce:String::new(),
         client_id:None,redirect_uri:None,downstream_state:None,challenge:None,
@@ -82,16 +84,26 @@ pub async fn login(State(state): State<AppState>, Path(provider): Path<String>) 
 #[derive(Deserialize)]
 pub struct Callback { code: Option<String>, state: Option<String>, error: Option<String> }
 pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<String>,
-                      Query(q): Query<Callback>) -> AppResult<Response> {
+                      Query(q): Query<Callback>, headers: HeaderMap) -> AppResult<Response> {
     if q.error.is_some() { return Err(AppError::bad("login was denied by provider")); }
     let st = q.state.ok_or_else(|| AppError::bad("missing state"))?;
     let code = q.code.ok_or_else(|| AppError::bad("missing code"))?;
+    // The state parameter alone does not prevent login-CSRF or cross-browser account linking.
+    // Require the HttpOnly host-only cookie issued to the initiating browser.
+    let browser_state = cookie_value(&headers, "sso_flow").ok_or_else(AppError::forbidden)?;
+    if st.len() != browser_state.len() || !bool::from(st.as_bytes().ct_eq(browser_state.as_bytes())) {
+        return Err(AppError::forbidden());
+    }
     let row = sqlx::query(&state.db.q("SELECT data FROM auth_tx WHERE state=? AND expires>? AND used=0"))
         .bind(&st).bind(crypto::now()).fetch_optional(&state.db.pool).await?
         .ok_or_else(|| AppError::bad("state expired or already used"))?;
     let tx: Transaction = serde_json::from_str(&row.try_get::<String,_>("data")?)
         .map_err(|_| AppError::bad("invalid auth state"))?;
     if tx.provider != provider_id { return Err(AppError::bad("provider mismatch")); }
+    if tx.mode == "link" {
+        let current_user = session_user(&state, &headers).await?;
+        if tx.link_user.as_deref() != Some(&current_user) { return Err(AppError::forbidden()); }
+    }
     let consumed = sqlx::query(&state.db.q("UPDATE auth_tx SET used=1 WHERE state=? AND used=0 AND expires>?"))
         .bind(&st).bind(crypto::now()).execute(&state.db.pool).await?;
     if consumed.rows_affected() != 1 { return Err(AppError::bad("replayed callback")); }
@@ -118,7 +130,7 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
             .bind(&provider_id).bind(&profile.subject).bind(&id).execute(&state.db.pool).await?;
         id
     };
-    match tx.mode.as_str() {
+    let mut response = match tx.mode.as_str() {
         "client" => {
             let client_id = tx.client_id.ok_or_else(|| AppError::bad("missing client"))?;
             let redirect_uri = tx.redirect_uri.ok_or_else(|| AppError::bad("missing redirect"))?;
@@ -144,7 +156,12 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
             Ok(([(header::SET_COOKIE,cookie)],Redirect::to("/")).into_response())
         }
         _ => Err(AppError::bad("unknown auth transaction"))
-    }
+    }?;
+    // Clear the short-lived flow cookie after successful consumption.
+    let secure = if state.config.public_url.starts_with("https://") { "; Secure" } else { "" };
+    let clear = format!("sso_flow=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax{secure}");
+    response.headers_mut().append(header::SET_COOKIE, clear.parse().map_err(|_| AppError::bad("invalid flow cookie"))?);
+    Ok(response)
 }
 
 #[derive(Deserialize)]
@@ -246,10 +263,13 @@ pub async fn metadata(State(state): State<AppState>) -> Json<Value> {
         "code_challenge_methods_supported":["S256"],
         "token_endpoint_auth_methods_supported":["client_secret_post","client_secret_basic","none"]}))
 }
+fn cookie_value<'a>(headers: &'a HeaderMap, key: &str) -> Option<&'a str> {
+    let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
+    cookie.split(';').find_map(|part| part.trim().split_once('='))
+        .filter(|(k, _)| *k == key).map(|(_, v)| v)
+}
 pub(crate) async fn session_user(state: &AppState, headers: &HeaderMap) -> AppResult<String> {
-    let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()).unwrap_or_default();
-    let token = cookie.split(';').filter_map(|part| part.trim().strip_prefix("sso_session="))
-        .next().ok_or_else(AppError::unauthorized)?;
+    let token = cookie_value(headers, "sso_session").ok_or_else(AppError::unauthorized)?;
     let row = sqlx::query(&state.db.q("SELECT user_id FROM sessions WHERE token_hash=? AND expires>?"))
         .bind(crypto::digest(token)).bind(crypto::now()).fetch_optional(&state.db.pool).await?
         .ok_or_else(AppError::unauthorized)?;
