@@ -99,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/me/links", get(auth::links))
         .route("/me/apps", get(auth::apps))
         .route("/me/apps/{client}/revoke", post(auth::revoke_app))
-        .route("/me/link/{provider}", get(auth::link))
+        .route("/me/link/{provider}", post(auth::link))
         .route("/me/unlink/{provider}", post(auth::unlink))
         .route("/session/logout", post(auth::logout))
         .route("/connect/register", post(management::register))
