@@ -1,0 +1,15 @@
+services:
+  sso:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SSO_BIND: 0.0.0.0:8080
+      SSO_DATABASE_URL: sqlite:///var/lib/sso/sso.db?mode=rwc
+      SSO_DATA_DIR: /var/lib/sso
+    volumes:
+      - sso-data:/var/lib/sso
+    ports:
+      - "127.0.0.1:8080:8080"
+volumes:
+  sso-data:

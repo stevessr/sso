@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#64558f" />
+  <title>SSO · 身份中心</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+  <script defer src="/assets/app.js"></script>
+</head>
+<body>
+  <div class="wallpaper" id="wallpaper"></div><div class="scrim"></div>
+  <main class="shell">
+    <header class="topbar surface">
+      <a class="brand" href="/"><span class="brand-icon">S</span><span><b>SSO</b><small>Identity broker</small></span></a>
+      <nav aria-label="Main navigation"><a href="/account">账户</a><a href="/admin">管理</a></nav>
+    </header>
+    <section class="hero">
+      <span class="eyebrow">统一身份 · 自托管 · 可组合</span>
+      <h1 id="page-title">身份，不应被应用边界限制。</h1>
+      <p id="page-subtitle">连接身份提供商，控制每个应用的访问权限。</p>
+    </section>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <section class="page surface" id="login-page" hidden>
+      <div class="section-heading"><span class="icon">↗</span><div><h2>选择登录方式</h2><p>登录成功后将返回目标应用。</p></div></div>
+      <div class="provider-grid" id="login-providers"></div>
+    </section>
+    <section class="page surface" id="account-page" hidden>
+      <div class="section-heading"><span class="icon">◉</span><div><h2>我的账户</h2><p>查看并管理你绑定的身份。</p></div></div>
+      <div id="account-overview" class="panel"></div>
+      <div class="section-heading"><div><h3>身份绑定</h3><p>可以绑定多个提供商；最后一个登录方式不能解绑。</p></div></div>
+      <div id="identities" class="stack"></div>
+      <h3>已授权应用</h3><div id="account-apps" class="stack"></div>
+      <h3>添加身份提供商</h3><div id="link-providers" class="provider-grid"></div>
+      <div class="button-row"><button type="button" class="outline" id="logout">退出登录</button>
+        <button type="button" class="secondary" id="export-encrypted">WASM 加密导出账户信息</button></div>
+    </section>
+    <section class="page surface" id="admin-page" hidden>
+      <div class="section-heading"><span class="icon">⚙</span><div><h2>管理控制台</h2><p>OAuth 客户端、联动规则、身份字段及主题设置。</p></div></div>
+      <div class="panel"><label for="admin-key">管理员令牌（仅保存在当前页面的内存中）</label>
+        <div class="field-row"><input id="admin-key" type="password" autocomplete="off" placeholder="输入 SSO_ADMIN_TOKEN" /><button id="admin-connect">连接</button></div></div>
+      <div id="admin-content" hidden>
+        <div class="stats"><article class="stat"><b id="stat-clients">0</b><span>OAuth 客户端</span></article>
+          <article class="stat"><b id="stat-rules">0</b><span>跨应用规则</span></article><article class="stat"><b id="stat-mappings">0</b><span>字段映射</span></article></div>
+        <h3>客户端自助注册</h3><p class="muted">向 <code>/connect/register</code> 发送初始化注册令牌。注册后只返回一次 Client Secret。</p>
+        <div id="clients" class="stack"></div>
+        <div class="columns">
+          <section class="panel"><h3>添加应用联动规则</h3>
+            <label for="rule-source">源应用（触发登录）</label><select id="rule-source"></select>
+            <label for="rule-target">目标应用</label><select id="rule-target"></select>
+            <label for="rule-action">操作</label><select id="rule-action">
+              <option value="revoke">吊销现有 Access Token</option>
+              <option value="suspend">暂停访问（可定时恢复）</option>
+              <option value="restore_for">暂时恢复访问（到期回原规则）</option>
+            </select>
+            <label for="rule-duration">有效时间（秒；暂停留空代表无限期）</label><input type="number" id="rule-duration" min="1" max="31536000" placeholder="3600" />
+            <button id="add-rule">保存联动规则</button>
+          </section>
+          <section class="panel"><h3>现有联动规则</h3><div id="rules" class="stack"></div></section>
+        </div>
+        <h3>可视化字段流动</h3><p class="muted">每条映射表示上游身份字段流向下游声明；JS 在服务端隔离的无 I/O 引擎中运行，只有管理员能修改。</p>
+        <section class="panel">
+          <div class="columns">
+            <div><label for="map-provider">上游提供商</label><select id="map-provider"></select></div>
+            <div><label for="map-client">下游客户端</label><select id="map-client"></select></div>
+          </div>
+          <div class="field-flow" id="field-flow"><div class="flow-col"><b>上游</b><div id="flow-input"></div></div>
+            <div class="flow-arrows" id="flow-arrows" aria-hidden="true">→</div>
+            <div class="flow-col"><b>下游</b><div id="flow-output"></div></div></div>
+          <label for="map-rules">字段映射 JSON（from/to 数组，空数组表示保留原字段）</label>
+          <textarea id="map-rules" spellcheck="false" rows="4">[{"from":"name","to":"name"},{"from":"email","to":"email"},{"from":"preferred_username","to":"preferred_username"}]</textarea>
+          <label for="map-script">JavaScript 转换（修改 claims 对象）</label><textarea id="map-script" spellcheck="false" rows="4">// 示例：claims.name = claims.name?.trim();</textarea>
+          <label for="map-input">预览输入 JSON</label><textarea id="map-input" spellcheck="false" rows="5">{"sub":"example-123","name":"Example User","email":"example@example.com","preferred_username":"example"}</textarea>
+          <div class="button-row"><button id="preview-map" class="secondary">预览字段结果</button><button id="save-map">保存映射</button></div>
+          <pre id="map-result" class="code-block" aria-live="polite">{}</pre>
+        </section>
+        <h3>Material 3 动态主题</h3>
+        <section class="panel"><p>上传 JPG、PNG 或 WebP 背景（5 MiB 以下），自动提取图片主色生成动态色板。</p>
+          <div class="field-row"><input id="background-file" type="file" accept="image/png,image/jpeg,image/webp" /><button id="upload-background">上传并取色</button></div>
+          <div id="seed-swatches" class="swatches" aria-label="主题配色"></div>
+        </section>
+      </div>
+    </section>
+    <footer>SSO · Rust / OpenID Connect / OAuth 2.0 · 自托管身份中心</footer>
+  </main>
+</body>
+</html>
