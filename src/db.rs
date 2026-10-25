@@ -51,6 +51,13 @@ impl Db {
             "CREATE TABLE IF NOT EXISTS refresh_tokens (token_hash VARCHAR(191) PRIMARY KEY, family_id VARCHAR(191) NOT NULL, client_id VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, scope TEXT NOT NULL, expires BIGINT NOT NULL, used BIGINT NOT NULL DEFAULT 0, revoked BIGINT NOT NULL DEFAULT 0)",
             "CREATE TABLE IF NOT EXISTS refresh_access (token_hash VARCHAR(191) PRIMARY KEY, family_id VARCHAR(191) NOT NULL)",
             "CREATE TABLE IF NOT EXISTS sessions (token_hash VARCHAR(191) PRIMARY KEY, user_id VARCHAR(191) NOT NULL, expires BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS totp_pending (user_id VARCHAR(191) PRIMARY KEY, sealed_secret TEXT NOT NULL, expires BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS totp_accounts (user_id VARCHAR(191) PRIMARY KEY, sealed_secret TEXT NOT NULL, enabled BIGINT NOT NULL, last_step BIGINT NOT NULL DEFAULT -1)",
+            "CREATE TABLE IF NOT EXISTS recovery_codes (user_id VARCHAR(191) NOT NULL, code_hash VARCHAR(191) NOT NULL, used BIGINT NOT NULL DEFAULT 0, PRIMARY KEY(user_id,code_hash))",
+            "CREATE TABLE IF NOT EXISTS session_assurance (token_hash VARCHAR(191) PRIMARY KEY, factor VARCHAR(32) NOT NULL, verified_at BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS mfa_redirects (token_hash VARCHAR(191) PRIMARY KEY, next_path TEXT NOT NULL, expires BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS passkeys (credential_id VARCHAR(512) PRIMARY KEY, user_id VARCHAR(191) NOT NULL, credential_json TEXT NOT NULL, label TEXT NOT NULL, created BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS passkey_challenges (id VARCHAR(191) PRIMARY KEY, user_id VARCHAR(191) NOT NULL, kind VARCHAR(32) NOT NULL, state_json TEXT NOT NULL, session_hash VARCHAR(191), expires BIGINT NOT NULL, used BIGINT NOT NULL DEFAULT 0)",
             "CREATE TABLE IF NOT EXISTS policies (id VARCHAR(191) PRIMARY KEY, source_client VARCHAR(191) NOT NULL, target_client VARCHAR(191) NOT NULL, action VARCHAR(32) NOT NULL, duration_seconds BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS mappings (provider VARCHAR(191) PRIMARY KEY, fields TEXT NOT NULL, script TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS audit (id VARCHAR(191) PRIMARY KEY, event VARCHAR(191) NOT NULL, actor TEXT NOT NULL, metadata TEXT NOT NULL, created BIGINT NOT NULL)"
