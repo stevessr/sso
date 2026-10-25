@@ -266,6 +266,22 @@ mod tests{
         assert!(valid_next("/"));
         assert!(valid_next("/consent?request=valid_random-id_123"));
     }
+    #[tokio::test]
+    async fn recovery_code_is_single_use_and_bound_to_its_user(){
+        let db=std::sync::Arc::new(crate::db::Db::open("sqlite::memory:").await.unwrap());
+        let config=crate::config::Config{
+            public_url:"http://localhost:3000".into(),bind:"127.0.0.1:3000".parse().unwrap(),
+            auto_port:false,db_url:"sqlite::memory:".into(),admin_token_hash:"unused".into(),
+            registration_token_hash:None,providers:vec![],
+        };
+        let state=AppState{config:std::sync::Arc::new(config),db,http:reqwest::Client::new()};
+        let secret="a".repeat(48);
+        sqlx::query("INSERT INTO recovery_codes (user_id,code_hash,used) VALUES ('alice',?,0)")
+            .bind(crypto::digest(&secret)).execute(&state.db.pool).await.unwrap();
+        assert!(verify_factor(&state,"bob",&secret).await.is_err());
+        assert_eq!(verify_factor(&state,"alice",&secret).await.unwrap(),"recovery");
+        assert!(verify_factor(&state,"alice",&secret).await.is_err());
+    }
     #[test]
     fn otp_has_six_digits(){
         let totp=totp(b"01234567890123456789").unwrap();
