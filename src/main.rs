@@ -78,6 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/oauth/token", post(auth::token))
         .route("/oauth/userinfo", get(auth::userinfo))
         .route("/oauth/revoke", post(auth::revoke))
+        .route("/oauth/introspect", post(auth::introspect))
         .route("/.well-known/oauth-authorization-server", get(auth::metadata))
         .route("/me", get(auth::me))
         .route("/me/links", get(auth::links))
