@@ -1,7 +1,7 @@
 name: Rust CI
 on:
   push:
-    branches: [main, feat/rust-sso-gateway]
+    branches: [main]
   pull_request:
 jobs:
   test:
@@ -16,3 +16,7 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo check --manifest-path frontend-crypto/Cargo.toml --target wasm32-unknown-unknown
+      - name: Validate browser scripts
+        run: |
+          node --check web/assets/app.js
+          node --check web/assets/consent.js
