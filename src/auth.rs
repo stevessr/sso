@@ -59,7 +59,7 @@ async fn check_client(state: &AppState, id: &str, redirect: &str) -> AppResult<(
     if !redirect_uris.iter().any(|v| v == redirect) { return Err(AppError::bad("unregistered redirect URI")); }
     Ok(())
 }
-pub async fn authorize(State(state): State<AppState>, Query(q): Query<AuthorizeQuery>) -> AppResult<Response> {
+pub async fn authorize(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<AuthorizeQuery>) -> AppResult<Response> {
     if q.response_type != "code" || q.code_challenge_method != "S256"
         || !crypto::valid_pkce(&q.code_challenge) || q.state.len() < 16 || q.state.len() > 512 {
         return Err(AppError::bad("authorization_code, PKCE S256 and state required"));
@@ -69,6 +69,16 @@ pub async fn authorize(State(state): State<AppState>, Query(q): Query<AuthorizeQ
         if scope.len() > 128 || scope.trim().is_empty() || scope.split_whitespace().any(|s| !["profile", "email", "offline_access"].contains(&s)) {
             return Err(AppError::bad("unsupported scope"));
         }
+    }
+    // An already-verified first-party session (including a successful Passkey
+    // login) can proceed to consent without forcing a second upstream login.
+    if let Ok(user) = session_user(&state,&headers).await {
+        let request_id=crypto::random_token();
+        sqlx::query(&state.db.q("INSERT INTO pending_consents (id,user_id,client_id,redirect_uri,challenge,scope,downstream_state,expires,used) VALUES (?,?,?,?,?,?,?,?,0)"))
+            .bind(&request_id).bind(&user).bind(&q.client_id).bind(&q.redirect_uri)
+            .bind(&q.code_challenge).bind(q.scope.as_deref().unwrap_or("profile"))
+            .bind(&q.state).bind(crypto::now()+300).execute(&state.db.pool).await?;
+        return Ok(Redirect::to(&format!("/consent?request={request_id}")).into_response());
     }
     let provider = q.provider.or_else(|| state.config.providers.first().map(|p| p.id.clone()))
         .ok_or_else(|| AppError::bad("no login providers configured"))?;
