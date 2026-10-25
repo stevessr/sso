@@ -12,3 +12,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test
         run: cargo test
+      - name: Verify WASM draft encryption crate
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check --manifest-path frontend-crypto/Cargo.toml --target wasm32-unknown-unknown
