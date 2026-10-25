@@ -85,6 +85,8 @@ pub async fn disable_client(State(state): State<AppState>, headers: HeaderMap, P
     // Disabling must invalidate existing grants, not just temporarily hide their validity.
     sqlx::query(&state.db.q("UPDATE tokens SET revoked=1 WHERE client_id=?"))
         .bind(&client).execute(&mut *tx).await?;
+    sqlx::query(&state.db.q("UPDATE refresh_tokens SET revoked=1 WHERE client_id=?"))
+        .bind(&client).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(json!({"id":client,"enabled":false,"existing_tokens_revoked":true})))
 }
@@ -107,6 +109,8 @@ pub async fn rotate_client_secret(State(state): State<AppState>, headers: Header
     sqlx::query(&state.db.q("UPDATE clients SET secret_hash=? WHERE id=?"))
         .bind(crypto::digest(&secret)).bind(&client).execute(&mut *tx).await?;
     sqlx::query(&state.db.q("UPDATE tokens SET revoked=1 WHERE client_id=?"))
+        .bind(&client).execute(&mut *tx).await?;
+    sqlx::query(&state.db.q("UPDATE refresh_tokens SET revoked=1 WHERE client_id=?"))
         .bind(&client).execute(&mut *tx).await?;
     tx.commit().await?;
     // This plaintext is deliberately returned only once. Do not log the response.
