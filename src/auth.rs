@@ -154,7 +154,9 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
                 .execute(&state.db.pool).await?;
             let secure = if state.config.public_url.starts_with("https://") { "; Secure" } else { "" };
             let cookie = format!("sso_session={session}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax{secure}");
-            Ok(([(header::SET_COOKIE,cookie)],Redirect::to(&format!("/consent?request={request_id}"))).into_response())
+            let next=crate::mfa::new_session_target(&state,&user_id,&crypto::digest(&session),
+                &format!("/consent?request={request_id}"),false).await?;
+            Ok(([(header::SET_COOKIE,cookie)],Redirect::to(&next)).into_response())
         },
         "login" | "link" => {
             let session = crypto::random_token();
@@ -163,7 +165,12 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
                 .execute(&state.db.pool).await?;
             let secure = if state.config.public_url.starts_with("https://") { "; Secure" } else { "" };
             let cookie = format!("sso_session={session}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax{secure}");
-            Ok(([(header::SET_COOKIE,cookie)],Redirect::to("/")).into_response())
+            // Linking starts from an already assured session, so carry the
+            // second-factor assurance into the replacement session.
+            let verified_link=tx.mode=="link";
+            let next=crate::mfa::new_session_target(&state,&user_id,&crypto::digest(&session),
+                "/",verified_link).await?;
+            Ok(([(header::SET_COOKIE,cookie)],Redirect::to(&next)).into_response())
         }
         _ => Err(AppError::bad("unknown auth transaction"))
     }?;
@@ -421,12 +428,18 @@ fn cookie_value<'a>(headers: &'a HeaderMap, key: &str) -> Option<&'a str> {
     cookie.split(';').filter_map(|part| part.trim().split_once('='))
         .find(|(k, _)| *k == key).map(|(_, v)| v)
 }
-pub(crate) async fn session_user(state: &AppState, headers: &HeaderMap) -> AppResult<String> {
+pub(crate) async fn session_user_raw(state: &AppState, headers: &HeaderMap) -> AppResult<String> {
     let token = cookie_value(headers, "sso_session").ok_or_else(AppError::unauthorized)?;
     let row = sqlx::query(&state.db.q("SELECT user_id FROM sessions WHERE token_hash=? AND expires>?"))
         .bind(crypto::digest(token)).bind(crypto::now()).fetch_optional(&state.db.pool).await?
         .ok_or_else(AppError::unauthorized)?;
     Ok(row.try_get("user_id")?)
+}
+pub(crate) async fn session_user(state: &AppState, headers: &HeaderMap) -> AppResult<String> {
+    let user=session_user_raw(state,headers).await?;
+    let digest=crate::mfa::cookie_digest(headers)?;
+    crate::mfa::enforce_session(state,&user,&digest).await?;
+    Ok(user)
 }
 pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Json<Value>> {
     let id=session_user(&state,&headers).await?;
