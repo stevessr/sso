@@ -1,0 +1,9 @@
+{
+  "name":"sso-web-theme",
+  "version":"0.1.0",
+  "private":true,
+  "type":"module",
+  "scripts":{"build:monet":"esbuild monet-entry.js --bundle --format=esm --platform=browser --target=es2022 --outfile=monet.bundle.js"},
+  "dependencies":{"@material/material-color-utilities":"^0.3.0"},
+  "devDependencies":{"esbuild":"^0.25.0"}
+}
