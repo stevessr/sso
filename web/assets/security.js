@@ -116,5 +116,8 @@ byId('totp-disable').onclick=async()=>{
   if(v.disabled)location.assign('/');
  }catch(e){status('停用失败：'+e.message)}
 };
+fetch('/me',{credentials:'same-origin'}).then(async response=>{
+ if(response.ok){const profile=await response.json();byId('passkey-user-id').value=profile.id||''}
+}).catch(()=>{});
 passkeys().catch(()=>{});
 })();
