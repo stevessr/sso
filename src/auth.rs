@@ -395,6 +395,61 @@ mod tests {
         AppState { config: Arc::new(config), db, http: reqwest::Client::new() }
     }
 
+
+    #[tokio::test]
+    async fn callback_rejects_missing_or_wrong_browser_flow_cookie() {
+        let s = fixture().await;
+        let wrong = HeaderMap::new();
+        let err = callback(State(s.clone()), Path("google".into()),
+            Query(Callback { code: Some("mock".into()), state: Some("attacker-state".into()), error: None }),
+            wrong).await.unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        let mut another = HeaderMap::new();
+        another.insert(header::COOKIE, "other=123; sso_flow=different".parse().unwrap());
+        let err = callback(State(s), Path("google".into()),
+            Query(Callback { code: Some("mock".into()), state: Some("attacker-state".into()), error: None }),
+            another).await.unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn introspection_enforces_client_scope_and_suspension_even_for_new_tokens() {
+        let s = fixture().await;
+        for id in ["target", "other"] {
+            sqlx::query("INSERT INTO clients (id,name,secret_hash,redirects,created,enabled) VALUES (?,?,?,'[]',0,1)")
+                .bind(id).bind(id).bind(crypto::digest("very_secret"))
+                .execute(&s.db.pool).await.unwrap();
+        }
+        sqlx::query("INSERT INTO tokens (token_hash,client_id,user_id,scope,expires,revoked,suspended_until) VALUES (?,'target','user','profile email',?,0,0)")
+            .bind(crypto::digest("access-token")).bind(crypto::now()+300)
+            .execute(&s.db.pool).await.unwrap();
+        let call = |id: &str| IntrospectionForm { token: "access-token".into(),
+            token_type_hint: Some("access_token".into()), client_id: Some(id.into()),
+            client_secret: Some("very_secret".into()) };
+        assert_eq!(introspect(State(s.clone()), HeaderMap::new(), Form(call("target")))
+            .await.unwrap().0["active"],true);
+        // An unrelated client must never learn another app's token validity.
+        assert_eq!(introspect(State(s.clone()), HeaderMap::new(), Form(call("other")))
+            .await.unwrap().0["active"],false);
+        s.db.set_app_suspension("user","target",crypto::now()+300).await.unwrap();
+        assert_eq!(introspect(State(s.clone()), HeaderMap::new(), Form(call("target")))
+            .await.unwrap().0["active"],false);
+        // A fresh access token, minted after the suspension, is blocked too.
+        sqlx::query("INSERT INTO tokens (token_hash,client_id,user_id,scope,expires,revoked,suspended_until) VALUES (?,'target','user','profile',?,0,0)")
+            .bind(crypto::digest("new-token")).bind(crypto::now()+300).execute(&s.db.pool).await.unwrap();
+        let fresh = IntrospectionForm { token: "new-token".into(), token_type_hint: None,
+            client_id: Some("target".into()), client_secret: Some("very_secret".into()) };
+        assert_eq!(introspect(State(s.clone()), HeaderMap::new(), Form(fresh))
+            .await.unwrap().0["active"],false);
+        s.db.set_app_suspension("user","target",0).await.unwrap();
+        assert_eq!(introspect(State(s.clone()), HeaderMap::new(), Form(call("target")))
+            .await.unwrap().0["active"],true);
+        sqlx::query("UPDATE tokens SET revoked=1 WHERE token_hash=?")
+            .bind(crypto::digest("access-token")).execute(&s.db.pool).await.unwrap();
+        assert_eq!(introspect(State(s), HeaderMap::new(), Form(call("target")))
+            .await.unwrap().0["active"],false);
+    }
+
     #[tokio::test]
     async fn application_suspension_and_resume() {
         let s = fixture().await;
