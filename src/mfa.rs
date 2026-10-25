@@ -3,7 +3,7 @@
 //! same-origin authenticated session is required to enroll or disable factors.
 use crate::{auth, crypto, AppError, AppResult, AppState};
 use aes_gcm::{aead::{Aead, KeyInit, Payload}, Aes256Gcm, Nonce};
-use axum::{extract::State, http::{HeaderMap, header}, Json};
+use axum::{extract::State, http::{HeaderMap, header}, response::Html, Json};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::{rngs::OsRng, RngCore};
 use serde::Deserialize;
@@ -47,7 +47,7 @@ pub fn cookie_digest(headers: &HeaderMap) -> AppResult<String> {
     let raw = headers.get(header::COOKIE).and_then(|h| h.to_str().ok())
         .unwrap_or("").split(';').find_map(|part|part.trim().strip_prefix("sso_session="))
         .ok_or_else(AppError::unauthorized)?;
-    if raw.len() < 32 || raw.len() > 512 { return Err(AppError::unauthorized()); }
+    if raw.is_empty() || raw.len() > 512 { return Err(AppError::unauthorized()); }
     Ok(crypto::digest(raw))
 }
 pub async fn enabled(state: &AppState, user: &str) -> AppResult<bool> {
@@ -80,6 +80,9 @@ pub async fn new_session_target(
         return Ok("/mfa".into());
     }
     Ok(next.into())
+}
+pub async fn page()->Html<&'static str>{
+    Html(include_str!("../web/mfa.html"))
 }
 pub async fn status(State(state): State<AppState>,headers:HeaderMap)->AppResult<Json<Value>> {
     let user=auth::session_user_raw(&state,&headers).await?;
@@ -133,6 +136,8 @@ pub async fn enroll_confirm(State(state):State<AppState>,headers:HeaderMap,Json(
             .bind(&user).bind(crypto::digest(&code)).execute(&mut *tx).await?;
         recovery.push(code);
     }
+    sqlx::query(&state.db.q("DELETE FROM session_assurance WHERE token_hash=?"))
+        .bind(&digest).execute(&mut *tx).await?;
     sqlx::query(&state.db.q("INSERT INTO session_assurance (token_hash,factor,verified_at) VALUES (?,'totp',?)"))
         .bind(&digest).bind(crypto::now()).execute(&mut *tx).await?;
     // Enrollment immediately invalidates every OTHER pre-enrollment session.
