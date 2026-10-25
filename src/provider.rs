@@ -155,3 +155,51 @@ pub async fn preview(state: &AppState, provider_id: &str, raw: Value, fields: Ha
     }
     Ok(json!({"provider":provider.id, "mapped_fields":out, "subject_mutable":false}))
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    async fn state() -> AppState {
+        let db=Arc::new(crate::db::Db::open("sqlite::memory:").await.unwrap());
+        let config=crate::config::Config{
+            public_url:"http://localhost:3000".into(),
+            bind:"127.0.0.1:3000".parse().unwrap(),auto_port:false,
+            db_url:"sqlite::memory:".into(),admin_token_hash:"unused".into(),
+            registration_token_hash:None,providers:vec![]
+        };
+        AppState{config:Arc::new(config),db,http:reqwest::Client::new()}
+    }
+    fn provider(id:&str)->Provider {
+        Provider{
+            id:id.into(),label:id.into(),kind:ProviderKind::OAuthUserinfo,
+            client_id:"test".into(),client_secret:"test".into(),
+            authorize_url:"https://example.test/authorize".into(),
+            token_url:"https://example.test/token".into(),
+            issuer:None,jwks_url:None,userinfo_url:Some("https://example.test/me".into()),
+            scopes:"profile".into(),token_auth_basic:false
+        }
+    }
+    #[tokio::test]
+    async fn github_integer_subject_is_stable_and_unverified_email_is_suppressed() {
+        let s=state().await;
+        let profile=normalize(&s,&provider("github"),json!({
+            "id":12345,"login":"octocat","email":"not-verified@example.test",
+            "avatar_url":"https://avatars.example.test/octocat.png"
+        })).await.unwrap();
+        assert_eq!(profile.subject,"12345");
+        assert_eq!(profile.name,"octocat");
+        assert!(profile.email.is_none());
+    }
+    #[tokio::test]
+    async fn discord_verified_claim_can_supply_email_but_not_change_subject() {
+        let s=state().await;
+        let profile=normalize(&s,&provider("discord"),json!({
+            "id":"123456789123456789","username":"example",
+            "email":"verified@example.test","verified":true
+        })).await.unwrap();
+        assert_eq!(profile.subject,"123456789123456789");
+        assert_eq!(profile.email.as_deref(),Some("verified@example.test"));
+    }
+}
