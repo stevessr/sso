@@ -204,7 +204,7 @@ pub struct ConsentDecision {
     decision: String,
 }
 pub async fn consent_decision(State(state): State<AppState>, headers: HeaderMap,
-                              Json(data): Json<ConsentDecision>) -> AppResult<Redirect> {
+                              Form(data): Form<ConsentDecision>) -> AppResult<Redirect> {
     require_same_origin(&state, &headers)?;
     if !["allow","deny"].contains(&data.decision.as_str()) {
         return Err(AppError::bad("consent decision must be allow or deny"));
