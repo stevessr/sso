@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>授权确认 · SSO</title>
+<style>
+:root{font:16px/1.55 Roboto,"Noto Sans SC",system-ui,sans-serif;color-scheme:light dark}
+*{box-sizing:border-box}body{min-height:100vh;margin:0;background:#f8f6fb;color:#211f26;display:grid;place-items:center;padding:20px}
+main{width:min(520px,100%);background:#fff;border-radius:28px;padding:clamp(22px,4vw,38px);box-shadow:0 18px 75px #261b3718;border:1px solid #e7e0ec}
+.logo{width:58px;height:58px;border-radius:21px;background:#6750a4;color:white;display:grid;place-items:center;font-weight:800;font-size:27px}
+h1{font-size:30px;line-height:1.2;font-weight:650;margin:24px 0 15px}.muted{color:#625b71}
+.grant{background:#f4eff9;border-radius:19px;padding:17px 20px;margin:16px 0;overflow-wrap:anywhere}
+.grant strong{font-size:18px}.scope{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+.scope span{padding:7px 13px;border-radius:100px;background:#e7def8;font-size:13px;color:#3d2c67}
+.actions{display:flex;gap:12px;justify-content:flex-end;flex-wrap:wrap;margin-top:30px}
+button{border:0;border-radius:24px;padding:12px 25px;font:inherit;font-weight:650;cursor:pointer}
+button:disabled{opacity:.5;cursor:not-allowed}.allow{background:#6750a4;color:white}.deny{background:#e7e0ec;color:#241b35}
+#message{min-height:1.5em;color:#b3261e;font-size:13px}
+@media(prefers-color-scheme:dark){body{background:#141218;color:#e6e0e9}main{background:#211f26;border-color:#46424a}.muted{color:#b5adbd}.grant{background:#302b38}.scope span{background:#4f3d71;color:#e6d7ff}.deny{background:#44404b;color:#f0e9f4}}
+</style>
+</head>
+<body>
+<main>
+<div class="logo">S</div>
+<h1>确认应用访问权限</h1>
+<p class="muted">第三方应用正在请求访问你的统一身份。批准前，请确认应用名称、回调地址及请求的权限。</p>
+<section class="grant">
+<div class="muted">请求的应用</div><strong id="app">加载中…</strong>
+<p class="muted" style="margin:6px 0 0" id="client-id"></p>
+<div class="muted" style="margin-top:20px">认证后返回到</div><div id="redirect"></div>
+<div class="muted" style="margin-top:20px">本次授权范围</div><div class="scope" id="scopes"></div>
+</section>
+<p class="muted" style="font-size:13px">只有同意后，SSO 才会向此应用签发一次性授权码。拒绝不会向应用泄露你的账号资料。</p>
+<p id="message" role="status"></p>
+<div class="actions"><button id="deny" class="deny" disabled>拒绝</button><button id="allow" class="allow" disabled>允许访问</button></div>
+</main>
+<script>
+'use strict';
+const q=new URLSearchParams(location.search), id=q.get('request');
+const byId=name=>document.getElementById(name);
+function error(message){byId('message').textContent=message}
+async function load(){
+ if(!id||id.length>256){error('授权请求参数无效');return}
+ try{
+ const r=await fetch('/oauth/consent/request?request='+encodeURIComponent(id),{credentials:'same-origin',cache:'no-store'});
+ const v=await r.json();if(!r.ok)throw Error(v.error||'授权请求已失效');
+ byId('app').textContent=v.client_name;
+ byId('client-id').textContent=v.client_id;
+ byId('redirect').textContent=v.redirect_uri;
+ const scope=byId('scopes');scope.replaceChildren();
+ for(const name of v.scope.split(/\s+/).filter(Boolean)){const chip=document.createElement('span');chip.textContent=name==='email'?'读取已验证邮箱':name==='profile'?'读取个人资料':name;scope.append(chip)}
+ byId('allow').disabled=false;byId('deny').disabled=false;
+ }catch(e){error(e.message)}
+}
+async function decide(decision){
+ for(const k of ['allow','deny'])byId(k).disabled=true;
+ error('正在处理授权…');
+ try{
+   const r=await fetch('/oauth/consent/decision',{method:'POST',credentials:'same-origin',
+     headers:{'Content-Type':'application/json'},body:JSON.stringify({request:id,decision}),redirect:'manual'});
+   // fetch redirects using manual; opaque redirects cannot expose the destination.
+   // The endpoint sends 303/302 to an external registered callback URL, so request a
+   // fresh top-level navigation using the same-origin handoff below.
+   if(r.status===200){const v=await r.json();if(v.redirect){location.assign(v.redirect);return}}
+   if(r.status>=300&&r.status<400){location.assign('/consent/complete?request='+encodeURIComponent(id));return}
+   const v=await r.json().catch(()=>({}));throw Error(v.error||'无法处理授权');
+ }catch(e){error(e.message);byId('allow').disabled=false;byId('deny').disabled=false}
+}
+byId('allow').onclick=()=>decide('allow');
+byId('deny').onclick=()=>decide('deny');
+load();
+</script>
+</body>
+</html>
