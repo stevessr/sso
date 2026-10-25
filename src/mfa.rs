@@ -189,8 +189,15 @@ pub async fn verify(State(state):State<AppState>,headers:HeaderMap,Json(data):Js
     auth::require_same_origin(&state,&headers)?;
     let user=auth::session_user_raw(&state,&headers).await?;
     if !enabled(&state,&user).await?{return Err(AppError::bad("MFA not configured"))}
-    let digest=cookie_digest(&headers)?;
     let factor=verify_factor(&state,&user,&data.code).await?;
+    let next=mark_factor(&state,&headers,factor).await?;
+    Ok(Json(json!({"ok":true,"next":next})))
+}
+
+pub async fn mark_factor(state:&AppState,headers:&HeaderMap,factor:&str)->AppResult<String>{
+    let user=auth::session_user_raw(state,headers).await?;
+    if !enabled(state,&user).await? {return Err(AppError::bad("second factor not enabled"))}
+    let digest=cookie_digest(headers)?;
     let mut tx=state.db.pool.begin().await?;
     sqlx::query(&state.db.q("DELETE FROM session_assurance WHERE token_hash=?"))
         .bind(&digest).execute(&mut *tx).await?;
@@ -202,8 +209,7 @@ pub async fn verify(State(state):State<AppState>,headers:HeaderMap,Json(data):Js
         .bind(&digest).execute(&mut *tx).await?;
     tx.commit().await?;
     let next=row.and_then(|r|r.try_get::<String,_>("next_path").ok()).unwrap_or_else(||"/".into());
-    let safe_next=if valid_next(&next) {next} else {"/".into()};
-    Ok(Json(json!({"ok":true,"next":safe_next})))
+    Ok(if valid_next(&next) {next} else {"/".into()})
 }
 pub async fn disable(State(state):State<AppState>,headers:HeaderMap,Json(data):Json<CodeInput>)->AppResult<Json<Value>> {
     auth::require_same_origin(&state,&headers)?;
