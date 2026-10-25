@@ -34,3 +34,5 @@ details{margin-top:15px}summary{cursor:pointer;font-weight:650}
 footer{font-size:12px;color:var(--outline);text-align:center;margin-top:40px}
 @media(max-width:780px){.card{grid-column:span 12}main{margin-top:10px}.top{padding:13px 17px}.card{padding:18px}}
 @media(prefers-color-scheme:dark){:root{--surface:#141218;--surface-container:#211f26;--surface-high:#2b2930;--text:#e6e0e9;--outline:#aaa2af;--on-primary:#141218}body.has-wallpaper:after{background:#141218bf}}
+
+.intro-section{margin-bottom:28px}.space-top-20{margin-top:20px}.space-top-18{margin-top:18px}.inline-check{width:auto}.grid .nested-card{grid-column:span 6;box-shadow:none}@media(max-width:780px){.grid .nested-card{grid-column:span 12}}
