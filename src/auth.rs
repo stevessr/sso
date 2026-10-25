@@ -343,6 +343,38 @@ pub async fn links(State(state): State<AppState>, headers: HeaderMap) -> AppResu
     }))).collect();
     Ok(Json(json!(linked)))
 }
+
+pub async fn apps(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Json<Value>> {
+    let user = session_user(&state, &headers).await?;
+    let rows = sqlx::query(&state.db.q(
+        "SELECT c.id, c.name, COALESCE(a.suspended_until,0) AS blocked_until, \
+         COUNT(*) AS grant_count, \
+         SUM(CASE WHEN t.expires>? AND t.revoked=0 AND t.suspended_until<=? \
+          AND COALESCE(a.suspended_until,0)<=? AND c.enabled=1 THEN 1 ELSE 0 END) AS active_tokens \
+         FROM tokens t JOIN clients c ON c.id=t.client_id \
+         LEFT JOIN app_access a ON a.user_id=t.user_id AND a.client_id=t.client_id \
+         WHERE t.user_id=? GROUP BY c.id,c.name,c.enabled,a.suspended_until \
+         ORDER BY c.name LIMIT 200"
+    )).bind(crypto::now()).bind(crypto::now()).bind(crypto::now())
+      .bind(&user).fetch_all(&state.db.pool).await?;
+    let out: Vec<Value> = rows.into_iter().filter_map(|r| Some(json!({
+        "id":r.try_get::<String,_>("id").ok()?,
+        "name":r.try_get::<String,_>("name").ok()?,
+        "grant_count":r.try_get::<i64,_>("grant_count").ok()?,
+        "active_tokens":r.try_get::<i64,_>("active_tokens").ok()?,
+        "blocked_until":r.try_get::<i64,_>("blocked_until").ok()?,
+    }))).collect();
+    Ok(Json(json!(out)))
+}
+pub async fn revoke_app(State(state): State<AppState>, headers: HeaderMap,
+                        Path(client): Path<String>) -> AppResult<Json<Value>> {
+    require_same_origin(&state, &headers)?;
+    let user = session_user(&state, &headers).await?;
+    let result = sqlx::query(&state.db.q("UPDATE tokens SET revoked=1 WHERE client_id=? AND user_id=? AND revoked=0"))
+        .bind(&client).bind(&user).execute(&state.db.pool).await?;
+    Ok(Json(json!({"revoked":result.rows_affected()})))
+}
+
 pub async fn link(State(state): State<AppState>, headers: HeaderMap, Path(provider): Path<String>) -> AppResult<Response> {
     let id=session_user(&state,&headers).await?;
     begin(&state,&provider,Transaction {
