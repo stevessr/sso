@@ -40,6 +40,8 @@ fn policy(path: &str) -> Option<(Kind, u32, Duration)> {
         path if path.starts_with("/mfa/verify") || path.starts_with("/mfa/enroll/")
             || path.starts_with("/mfa/disable") =>
             Some((Kind::Account, 12, Duration::from_secs(5 * minute))),
+        path if path.starts_with("/passkeys/stepup/") =>
+            Some((Kind::Account, 12, Duration::from_secs(5 * minute))),
         path if path.starts_with("/passkeys/login/") =>
             Some((Kind::Start, 30, Duration::from_secs(5 * minute))),
         path if path.starts_with("/passkeys/register/") || path.starts_with("/me/passkeys") =>
