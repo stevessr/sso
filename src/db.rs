@@ -70,6 +70,34 @@ mod tests {
         assert_eq!(row.0, 0);
     }
     #[tokio::test]
+    async fn configured_postgresql_and_mysql_roundtrip() {
+        for variable in ["SSO_TEST_POSTGRES_URL", "SSO_TEST_MYSQL_URL"] {
+            let Ok(url) = std::env::var(variable) else { continue };
+            let db = Db::open(&url).await.expect("connect and apply schema");
+            let id = format!("ci_{}", uuid::Uuid::new_v4().simple());
+            let mut tx = db.pool.begin().await.expect("begin");
+            sqlx::query(&db.q("INSERT INTO clients (id,name,secret_hash,redirects,created,enabled) VALUES (?,?,?,?,?,1)"))
+                .bind(&id).bind("Cross-backend CI").bind(Option::<String>::None)
+                .bind("[]").bind(1i64).execute(&mut *tx).await.expect("insert client");
+            sqlx::query(&db.q("INSERT INTO client_owners (client_id,user_id) VALUES (?,?)"))
+                .bind(&id).bind("ci-owner").execute(&mut *tx).await.expect("insert owner");
+            sqlx::query(&db.q("INSERT INTO refresh_tokens (token_hash,family_id,client_id,user_id,scope,expires,used,revoked) VALUES (?,?,?,?,?,?,0,0)"))
+                .bind(&id).bind(&id).bind(&id).bind("ci-owner").bind("offline_access")
+                .bind(9999999999i64).execute(&mut *tx).await.expect("insert refresh");
+            tx.commit().await.expect("commit");
+            let row = sqlx::query(&db.q(
+                "SELECT o.user_id FROM clients c JOIN client_owners o ON o.client_id=c.id WHERE c.id=?"
+            )).bind(&id).fetch_one(&db.pool).await.expect("roundtrip owner");
+            assert_eq!(row.try_get::<String,_>("user_id").unwrap(), "ci-owner");
+            sqlx::query(&db.q("DELETE FROM refresh_tokens WHERE client_id=?"))
+                .bind(&id).execute(&db.pool).await.expect("delete test refresh");
+            sqlx::query(&db.q("DELETE FROM client_owners WHERE client_id=?"))
+                .bind(&id).execute(&db.pool).await.expect("delete test owner");
+            sqlx::query(&db.q("DELETE FROM clients WHERE id=?"))
+                .bind(&id).execute(&db.pool).await.expect("delete test client");
+        }
+    }
+    #[tokio::test]
     async fn postgresql_placeholders_numbered() {
         let db = Db { pool: AnyPool::connect_lazy("sqlite::memory:").unwrap(), postgres: true };
         assert_eq!(db.q("SELECT a FROM t WHERE a=? AND b=?"), "SELECT a FROM t WHERE a=$1 AND b=$2");
