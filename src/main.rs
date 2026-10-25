@@ -4,6 +4,7 @@ mod db;
 mod provider;
 mod auth;
 mod management;
+mod rate_limit;
 
 use axum::{
     extract::DefaultBodyLimit, http::{StatusCode, header, HeaderName, HeaderValue}, response::{IntoResponse, Response},
@@ -117,10 +118,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .nest_service("/assets", ServeDir::new("web/assets"))
         .nest_service("/wasm", ServeDir::new("web/wasm"))
         .layer(DefaultBodyLimit::max(9 * 1024 * 1024))
+        .layer(axum::middleware::from_fn(rate_limit::guard))
         .layer(axum::middleware::map_response(security_headers))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
     tracing::info!(%bind_addr, "SSO gateway listening");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
 }
