@@ -75,6 +75,44 @@ pub async fn clients(State(state): State<AppState>, headers: HeaderMap) -> AppRe
     }))).collect();
     Ok(Json(json!(out)))
 }
+
+pub async fn disable_client(State(state): State<AppState>, headers: HeaderMap, Path(client): Path<String>) -> AppResult<Json<Value>> {
+    admin(&state, &headers)?;
+    let mut tx = state.db.pool.begin().await?;
+    let changed = sqlx::query(&state.db.q("UPDATE clients SET enabled=0 WHERE id=?"))
+        .bind(&client).execute(&mut *tx).await?;
+    if changed.rows_affected() == 0 { return Err(AppError::bad("unknown client")); }
+    // Disabling must invalidate existing grants, not just temporarily hide their validity.
+    sqlx::query(&state.db.q("UPDATE tokens SET revoked=1 WHERE client_id=?"))
+        .bind(&client).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"id":client,"enabled":false,"existing_tokens_revoked":true})))
+}
+pub async fn enable_client(State(state): State<AppState>, headers: HeaderMap, Path(client): Path<String>) -> AppResult<Json<Value>> {
+    admin(&state, &headers)?;
+    let result = sqlx::query(&state.db.q("UPDATE clients SET enabled=1 WHERE id=?"))
+        .bind(&client).execute(&state.db.pool).await?;
+    if result.rows_affected() == 0 { return Err(AppError::bad("unknown client")); }
+    Ok(Json(json!({"id":client,"enabled":true,"old_tokens_restored":false})))
+}
+pub async fn rotate_client_secret(State(state): State<AppState>, headers: HeaderMap, Path(client): Path<String>) -> AppResult<Json<Value>> {
+    admin(&state, &headers)?;
+    let row = sqlx::query(&state.db.q("SELECT secret_hash FROM clients WHERE id=?"))
+        .bind(&client).fetch_optional(&state.db.pool).await?
+        .ok_or_else(|| AppError::bad("unknown client"))?;
+    let old: Option<String> = row.try_get("secret_hash")?;
+    if old.is_none() { return Err(AppError::bad("public PKCE clients have no secret to rotate")); }
+    let secret = crypto::random_token();
+    let mut tx = state.db.pool.begin().await?;
+    sqlx::query(&state.db.q("UPDATE clients SET secret_hash=? WHERE id=?"))
+        .bind(crypto::digest(&secret)).bind(&client).execute(&mut *tx).await?;
+    sqlx::query(&state.db.q("UPDATE tokens SET revoked=1 WHERE client_id=?"))
+        .bind(&client).execute(&mut *tx).await?;
+    tx.commit().await?;
+    // This plaintext is deliberately returned only once. Do not log the response.
+    Ok(Json(json!({"client_id":client,"client_secret":secret,"existing_tokens_revoked":true})))
+}
+
 #[derive(Deserialize)]
 pub struct PolicyInput {
     source_client: String, target_client: String, action: String,
@@ -111,6 +149,14 @@ pub async fn policies(State(state): State<AppState>, headers: HeaderMap) -> AppR
     }))).collect();
     Ok(Json(json!(out)))
 }
+
+pub async fn delete_policy(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> AppResult<Json<Value>> {
+    admin(&state, &headers)?;
+    let result = sqlx::query(&state.db.q("DELETE FROM policies WHERE id=?"))
+        .bind(&id).execute(&state.db.pool).await?;
+    Ok(Json(json!({"deleted":result.rows_affected() > 0})))
+}
+
 #[derive(Deserialize, Serialize)]
 pub struct MappingInput { #[serde(default)] fields: HashMap<String,String>, #[serde(default)] script: String }
 fn validate_mapping(m: &MappingInput) -> AppResult<()> {
