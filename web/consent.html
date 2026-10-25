@@ -13,11 +13,11 @@
 <p class="muted">第三方应用正在请求访问你的统一身份。批准前，请确认应用名称、回调地址及请求的权限。</p>
 <section class="grant">
 <div class="muted">请求的应用</div><strong id="app">加载中…</strong>
-<p class="muted" style="margin:6px 0 0" id="client-id"></p>
-<div class="muted" style="margin-top:20px">认证后返回到</div><div id="redirect"></div>
-<div class="muted" style="margin-top:20px">本次授权范围</div><div class="scope" id="scopes"></div>
+<p class="muted" class="grant-id" id="client-id"></p>
+<div class="muted" class="grant-label">认证后返回到</div><div id="redirect"></div>
+<div class="muted" class="grant-label">本次授权范围</div><div class="scope" id="scopes"></div>
 </section>
-<p class="muted" style="font-size:13px">只有同意后，SSO 才会向此应用签发一次性授权码。拒绝不会向应用泄露你的账号资料。</p>
+<p class="muted" class="notice">只有同意后，SSO 才会向此应用签发一次性授权码。拒绝不会向应用泄露你的账号资料。</p>
 <p id="message" role="status"></p>
 <form method="POST" action="/oauth/consent/decision" id="consent-form"><input type="hidden" name="request" id="request-value"><div class="actions"><button id="deny" name="decision" value="deny" class="deny" disabled>拒绝</button><button id="allow" name="decision" value="allow" class="allow" disabled>允许访问</button></div></form>
 </main>
