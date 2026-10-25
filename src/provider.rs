@@ -24,14 +24,14 @@ pub async fn exchange(state: &AppState, provider: &Provider, code: &str, verifie
     let request = if provider.token_auth_basic {
         state.http.post(&provider.token_url)
             .basic_auth(&provider.client_id, Some(&provider.client_secret))
-            .form(&form)
+            .form(&form).header(reqwest::header::ACCEPT, "application/json")
     } else {
         let full_form = [
             ("grant_type", "authorization_code"), ("code", code),
             ("redirect_uri", callback.as_str()), ("client_id", provider.client_id.as_str()),
             ("code_verifier", verifier), ("client_secret", provider.client_secret.as_str()),
         ];
-        state.http.post(&provider.token_url).form(&full_form)
+        state.http.post(&provider.token_url).form(&full_form).header(reqwest::header::ACCEPT, "application/json")
     };
     let response = request.send().await.map_err(|_| AppError::upstream())?;
     if !response.status().is_success() { return Err(AppError::upstream()); }
@@ -104,12 +104,16 @@ fn run_script(script: &str, input: &Value) -> AppResult<Value> {
 
 pub async fn normalize(state: &AppState, provider: &Provider, raw: Value) -> AppResult<Profile> {
     let sub = raw["sub"].as_str().or_else(|| raw["id"].as_str())
-        .ok_or_else(AppError::upstream)?.to_owned();
+        .map(str::to_owned)
+        .or_else(|| raw["id"].as_u64().map(|n|n.to_string()))
+        .ok_or_else(AppError::upstream)?;
     if sub.len() > 191 { return Err(AppError::upstream()); }
     let name = raw["name"].as_str().or_else(|| raw["first_name"].as_str())
-        .or_else(|| raw["username"].as_str()).unwrap_or(&sub).to_owned();
-    let email = raw["email"].as_str().filter(|_| raw["email_verified"] == true).map(str::to_owned);
-    let avatar = raw["picture"].as_str().or_else(|| raw["profile_image_url"].as_str()).map(str::to_owned);
+        .or_else(|| raw["username"].as_str()).or_else(||raw["login"].as_str()).unwrap_or(&sub).to_owned();
+    let email = raw["email"].as_str()
+        .filter(|_|raw["email_verified"] == true || (provider.id=="discord" && raw["verified"]==true))
+        .map(str::to_owned);
+    let avatar = raw["picture"].as_str().or_else(|| raw["profile_image_url"].as_str()).or_else(||raw["avatar_url"].as_str()).map(str::to_owned);
     let verified_email = email.clone();
     let row = sqlx::query(&state.db.q("SELECT fields, script FROM mappings WHERE provider=?"))
         .bind(&provider.id).fetch_optional(&state.db.pool).await?;
