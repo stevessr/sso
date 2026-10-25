@@ -66,7 +66,7 @@ pub async fn authorize(State(state): State<AppState>, Query(q): Query<AuthorizeQ
     }
     check_client(&state, &q.client_id, &q.redirect_uri).await?;
     if let Some(scope) = &q.scope {
-        if scope.len() > 128 || scope.trim().is_empty() || scope.split_whitespace().any(|s| !["profile", "email"].contains(&s)) {
+        if scope.len() > 128 || scope.trim().is_empty() || scope.split_whitespace().any(|s| !["profile", "email", "offline_access"].contains(&s)) {
             return Err(AppError::bad("unsupported scope"));
         }
     }
@@ -243,7 +243,9 @@ pub async fn consent_decision(State(state): State<AppState>, headers: HeaderMap,
 
 #[derive(Deserialize)]
 pub struct TokenForm {
-    grant_type: String, code: String, redirect_uri: String, code_verifier: String,
+    grant_type: String,
+    code: Option<String>, redirect_uri: Option<String>, code_verifier: Option<String>,
+    refresh_token: Option<String>,
     client_id: Option<String>, client_secret: Option<String>
 }
 async fn authenticate_client(state: &AppState, headers: &HeaderMap, supplied_id: Option<&str>, supplied_secret: Option<&str>) -> AppResult<String> {
@@ -268,21 +270,32 @@ async fn authenticate_client(state: &AppState, headers: &HeaderMap, supplied_id:
     Ok(id)
 }
 pub async fn token(State(state): State<AppState>, headers: HeaderMap, Form(f): Form<TokenForm>) -> AppResult<Json<Value>> {
-    if f.grant_type != "authorization_code" || !crypto::valid_pkce(&f.code_verifier) {
-        return Err(AppError::bad("unsupported grant or invalid PKCE verifier"));
-    }
     let client_id = authenticate_client(&state,&headers,f.client_id.as_deref(),f.client_secret.as_deref()).await?;
+    if f.grant_type == "refresh_token" {
+        let refresh = f.refresh_token.as_deref().ok_or_else(|| AppError::bad("invalid_grant"))?;
+        return Ok(Json(crate::refresh::rotate(&state, &client_id, refresh).await?));
+    }
+    if f.grant_type != "authorization_code" {
+        return Err(AppError::bad("unsupported_grant_type"));
+    }
+    let code = f.code.as_deref().ok_or_else(|| AppError::bad("invalid_grant"))?;
+    let redirect_uri = f.redirect_uri.as_deref().ok_or_else(|| AppError::bad("invalid_grant"))?;
+    let verifier = f.code_verifier.as_deref().ok_or_else(|| AppError::bad("invalid_grant"))?;
+    if !crypto::valid_pkce(verifier) { return Err(AppError::bad("invalid_grant")); }
+    let digest = crypto::digest(code);
     let row = sqlx::query(&state.db.q("SELECT client_id,user_id,redirect_uri,challenge,scope FROM codes WHERE code_hash=? AND used=0 AND expires>?"))
-        .bind(crypto::digest(&f.code)).bind(crypto::now())
+        .bind(&digest).bind(crypto::now())
         .fetch_optional(&state.db.pool).await?.ok_or_else(|| AppError::bad("invalid_grant"))?;
     let stored_client: String = row.try_get("client_id")?;
     let redirect: String = row.try_get("redirect_uri")?;
     let challenge: String = row.try_get("challenge")?;
-    let calculated = crypto::pkce_challenge(&f.code_verifier);
-    if stored_client != client_id || redirect != f.redirect_uri
-        || !bool::from(calculated.as_bytes().ct_eq(challenge.as_bytes())) { return Err(AppError::bad("invalid_grant")); }
+    let calculated = crypto::pkce_challenge(verifier);
+    if stored_client != client_id || redirect != redirect_uri
+        || !bool::from(calculated.as_bytes().ct_eq(challenge.as_bytes())) {
+        return Err(AppError::bad("invalid_grant"));
+    }
     let used = sqlx::query(&state.db.q("UPDATE codes SET used=1 WHERE code_hash=? AND used=0 AND expires>?"))
-        .bind(crypto::digest(&f.code)).bind(crypto::now()).execute(&state.db.pool).await?;
+        .bind(&digest).bind(crypto::now()).execute(&state.db.pool).await?;
     if used.rows_affected() != 1 { return Err(AppError::bad("invalid_grant")); }
     let user_id: String = row.try_get("user_id")?;
     let scope: String = row.try_get("scope")?;
@@ -290,8 +303,14 @@ pub async fn token(State(state): State<AppState>, headers: HeaderMap, Form(f): F
     sqlx::query(&state.db.q("INSERT INTO tokens (token_hash,client_id,user_id,scope,expires,revoked,suspended_until) VALUES (?,?,?,?,?,0,0)"))
         .bind(crypto::digest(&access_token)).bind(&client_id).bind(&user_id).bind(&scope)
         .bind(crypto::now()+3600).execute(&state.db.pool).await?;
+    let refresh_token = crate::refresh::issue_initial(&state, &client_id, &user_id, &scope, &access_token).await?;
     apply_policies(&state,&client_id,&user_id).await?;
-    Ok(Json(json!({"access_token":access_token,"token_type":"Bearer","expires_in":3600,"scope":scope})))
+    let mut result = json!({"access_token":access_token,"token_type":"Bearer","expires_in":3600,"scope":scope});
+    if let Some(refresh) = refresh_token {
+        result["refresh_token"] = json!(refresh);
+        result["refresh_expires_in"] = json!(30 * 86400);
+    }
+    Ok(Json(result))
 }
 async fn apply_policies(state: &AppState, source: &str, user: &str) -> AppResult<()> {
     let rows = sqlx::query(&state.db.q("SELECT target_client,action,duration_seconds FROM policies WHERE source_client=?"))
@@ -301,8 +320,12 @@ async fn apply_policies(state: &AppState, source: &str, user: &str) -> AppResult
         let action: String = row.try_get("action")?;
         let duration: i64 = row.try_get("duration_seconds")?;
         match action.as_str() {
-            "revoke" => { sqlx::query(&state.db.q("UPDATE tokens SET revoked=1 WHERE client_id=? AND user_id=?"))
-                .bind(&target).bind(user).execute(&state.db.pool).await?; }
+            "revoke" => {
+                sqlx::query(&state.db.q("UPDATE tokens SET revoked=1 WHERE client_id=? AND user_id=?"))
+                    .bind(&target).bind(user).execute(&state.db.pool).await?;
+                sqlx::query(&state.db.q("UPDATE refresh_tokens SET revoked=1 WHERE client_id=? AND user_id=?"))
+                    .bind(&target).bind(user).execute(&state.db.pool).await?;
+            }
             "suspend" => {
                 let until = crypto::now().saturating_add(duration);
                 state.db.set_app_suspension(user, &target, until).await?;
@@ -375,8 +398,10 @@ pub async fn introspect(State(state): State<AppState>, headers: HeaderMap, Form(
 pub struct RevokeForm { token: String, client_id: Option<String>, client_secret: Option<String> }
 pub async fn revoke(State(state): State<AppState>, headers: HeaderMap, Form(form): Form<RevokeForm>) -> AppResult<Json<Value>> {
     let id = authenticate_client(&state,&headers,form.client_id.as_deref(),form.client_secret.as_deref()).await?;
-    sqlx::query(&state.db.q("UPDATE tokens SET revoked=1 WHERE token_hash=? AND client_id=?"))
-        .bind(crypto::digest(&form.token)).bind(id).execute(&state.db.pool).await?;
+    if !crate::refresh::revoke_grant(&state, &id, &form.token).await? {
+        sqlx::query(&state.db.q("UPDATE tokens SET revoked=1 WHERE token_hash=? AND client_id=?"))
+            .bind(crypto::digest(&form.token)).bind(&id).execute(&state.db.pool).await?;
+    }
     Ok(Json(json!({})))
 }
 pub async fn metadata(State(state): State<AppState>) -> Json<Value> {
@@ -387,7 +412,7 @@ pub async fn metadata(State(state): State<AppState>) -> Json<Value> {
         "revocation_endpoint":format!("{origin}/oauth/revoke"),
         "introspection_endpoint":format!("{origin}/oauth/introspect"),
         "registration_endpoint":format!("{origin}/connect/register"),
-        "response_types_supported":["code"],"grant_types_supported":["authorization_code"],
+        "response_types_supported":["code"],"grant_types_supported":["authorization_code","refresh_token"],
         "code_challenge_methods_supported":["S256"],
         "token_endpoint_auth_methods_supported":["client_secret_post","client_secret_basic","none"]}))
 }
@@ -447,8 +472,12 @@ pub async fn revoke_app(State(state): State<AppState>, headers: HeaderMap,
                         Path(client): Path<String>) -> AppResult<Json<Value>> {
     require_same_origin(&state, &headers)?;
     let user = session_user(&state, &headers).await?;
+    let mut tx = state.db.pool.begin().await?;
     let result = sqlx::query(&state.db.q("UPDATE tokens SET revoked=1 WHERE client_id=? AND user_id=? AND revoked=0"))
-        .bind(&client).bind(&user).execute(&state.db.pool).await?;
+        .bind(&client).bind(&user).execute(&mut *tx).await?;
+    sqlx::query(&state.db.q("UPDATE refresh_tokens SET revoked=1 WHERE client_id=? AND user_id=?"))
+        .bind(&client).bind(&user).execute(&mut *tx).await?;
+    tx.commit().await?;
     Ok(Json(json!({"revoked":result.rows_affected()})))
 }
 
