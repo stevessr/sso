@@ -42,7 +42,7 @@ fn policy(path: &str) -> Option<(Kind, u32, Duration)> {
         path if path.starts_with("/admin/") =>
             Some((Kind::Management, 120, Duration::from_secs(5 * minute))),
         path if path.starts_with("/me/link/") || path.starts_with("/me/unlink/")
-            || path.starts_with("/me/apps/") =>
+            || path.starts_with("/me/apps/") || path.starts_with("/me/clients") =>
             Some((Kind::Account, 40, Duration::from_secs(5 * minute))),
         _ => None,
     }
