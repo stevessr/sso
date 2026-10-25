@@ -174,6 +174,65 @@ pub async fn login_finish(State(state):State<AppState>,headers:HeaderMap,Json(bo
         .map_err(|_|AppError::bad("flow cookie failure"))?);
     Ok(response)
 }
+/// Elevate an OAuth-originated first-factor session using an already enrolled
+/// passkey, without replacing the session cookie. The challenge is bound to
+/// the exact session hash and cannot be replayed across browsers.
+pub async fn stepup_start(State(state):State<AppState>,headers:HeaderMap)->AppResult<Json<Value>> {
+    auth::require_same_origin(&state,&headers)?;
+    let user=auth::session_user_raw(&state,&headers).await?;
+    if !mfa::enabled(&state,&user).await? {return Err(AppError::bad("MFA is not enabled"))}
+    let saved=credentials(&state,&user).await?;
+    if saved.is_empty(){return Err(AppError::bad("no passkeys registered"))}
+    let creds:Vec<Passkey>=saved.into_iter().map(|(_,p)|p).collect();
+    let (options,ceremony)=engine(&state)?.start_passkey_authentication(&creds)
+        .map_err(|_|AppError::bad("passkey challenge unavailable"))?;
+    let request_id=crypto::random_token();
+    sqlx::query(&state.db.q("INSERT INTO passkey_challenges (id,user_id,kind,state_json,session_hash,expires,used) VALUES (?,?,'stepup',?,?,?,0)"))
+        .bind(&request_id).bind(user)
+        .bind(serde_json::to_string(&ceremony).map_err(|_|AppError::bad("invalid ceremony state"))?)
+        .bind(mfa::cookie_digest(&headers)?).bind(crypto::now()+300)
+        .execute(&state.db.pool).await?;
+    Ok(Json(json!({"request_id":request_id,"options":options})))
+}
+pub async fn stepup_finish(State(state):State<AppState>,headers:HeaderMap,Json(body):Json<LoginFinish>)
+    ->AppResult<Json<Value>>
+{
+    auth::require_same_origin(&state,&headers)?;
+    let user=auth::session_user_raw(&state,&headers).await?;
+    let digest=mfa::cookie_digest(&headers)?;
+    let row=sqlx::query(&state.db.q(
+        "SELECT state_json FROM passkey_challenges WHERE id=? AND kind='stepup' AND user_id=? AND session_hash=? AND used=0 AND expires>?"
+    )).bind(&body.request_id).bind(&user).bind(&digest).bind(crypto::now())
+      .fetch_optional(&state.db.pool).await?.ok_or_else(||AppError::bad("passkey step-up expired"))?;
+    let raw:String=row.try_get("state_json")?;
+    let ceremony:PasskeyAuthentication=serde_json::from_str(&raw)
+        .map_err(|_|AppError::bad("invalid passkey state"))?;
+    let changed=sqlx::query(&state.db.q(
+        "UPDATE passkey_challenges SET used=1 WHERE id=? AND kind='stepup' AND user_id=? AND session_hash=? AND used=0 AND expires>?"
+    )).bind(&body.request_id).bind(&user).bind(&digest).bind(crypto::now())
+      .execute(&state.db.pool).await?;
+    if changed.rows_affected()!=1 {return Err(AppError::bad("passkey step-up replayed"))}
+    let credential:PublicKeyCredential=serde_json::from_value(body.credential)
+        .map_err(|_|AppError::bad("invalid WebAuthn credential"))?;
+    let outcome=engine(&state)?.finish_passkey_authentication(&credential,&ceremony)
+        .map_err(|_|AppError::unauthorized())?;
+    let mut saved=credentials(&state,&user).await?;
+    let mut update=None;
+    for (id,passkey) in &mut saved {
+        let original=serde_json::to_string(passkey).map_err(|_|AppError::bad("passkey serialization failed"))?;
+        if passkey.update_credential(&outcome).is_some(){
+            update=Some((id.clone(),original,serde_json::to_string(passkey)
+                .map_err(|_|AppError::bad("passkey serialization failed"))?));break;
+        }
+    }
+    let (id,old,new)=update.ok_or_else(AppError::unauthorized)?;
+    let changed=sqlx::query(&state.db.q(
+        "UPDATE passkeys SET credential_json=? WHERE credential_id=? AND user_id=? AND credential_json=?"
+    )).bind(new).bind(id).bind(&user).bind(old).execute(&state.db.pool).await?;
+    if changed.rows_affected()!=1 {return Err(AppError::bad("passkey changed concurrently"))}
+    let next=mfa::mark_factor(&state,&headers,"passkey").await?;
+    Ok(Json(json!({"ok":true,"next":next})))
+}
 pub async fn list(State(state):State<AppState>,headers:HeaderMap)->AppResult<Json<Value>> {
     let user=auth::session_user(&state,&headers).await?;
     let rows=sqlx::query(&state.db.q("SELECT credential_id,label,created FROM passkeys WHERE user_id=? ORDER BY created DESC"))
