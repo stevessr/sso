@@ -63,7 +63,7 @@ async function refreshMyClients(){
 }
 function registrationPayload(){
  return {client_name:el('client-name').value,
-   redirect_uris:el('client-redirects').value.split('\\n').map(s=>s.trim()).filter(Boolean),
+   redirect_uris:el('client-redirects').value.split('\n').map(s=>s.trim()).filter(Boolean),
    public_client:el('client-public').checked}
 }
 function renderClientControls(clients){
