@@ -66,6 +66,12 @@ impl Config {
             "https://api.x.com/2/oauth2/token", None, None,
             Some("https://api.x.com/2/users/me?user.fields=name,username,profile_image_url"),
             "users.read tweet.read", true);
+        add("github", "GitHub", ProviderKind::OAuthUserinfo,
+            "https://github.com/login/oauth/authorize", "https://github.com/login/oauth/access_token",
+            None, None, Some("https://api.github.com/user"), "read:user user:email", false);
+        add("discord", "Discord", ProviderKind::OAuthUserinfo,
+            "https://discord.com/oauth2/authorize", "https://discord.com/api/oauth2/token",
+            None, None, Some("https://discord.com/api/users/@me"), "identify email", true);
         let custom: Vec<Provider> = serde_json::from_str(&env::var("SSO_PROVIDERS_JSON").unwrap_or_else(|_| "[]".into()))
             .map_err(|e| format!("invalid SSO_PROVIDERS_JSON: {e}"))?;
         for p in custom {
