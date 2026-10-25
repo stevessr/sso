@@ -1,4 +1,4 @@
-use crate::{config::{Provider, ProviderKind}, crypto, AppError, AppResult, AppState};
+use crate::{config::{Provider, ProviderKind}, AppError, AppResult, AppState};
 use jsonwebtoken::{decode, decode_header, jwk::JwkSet, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -21,19 +21,18 @@ pub async fn exchange(state: &AppState, provider: &Provider, code: &str, verifie
         ("redirect_uri", callback.as_str()), ("client_id", provider.client_id.as_str()),
         ("code_verifier", verifier)
     ];
-    let mut request = state.http.post(&provider.token_url).form(&form);
-    if provider.token_auth_basic {
-        request = request.basic_auth(&provider.client_id, Some(&provider.client_secret));
+    let request = if provider.token_auth_basic {
+        state.http.post(&provider.token_url)
+            .basic_auth(&provider.client_id, Some(&provider.client_secret))
+            .form(&form)
     } else {
-        request = request.form(&[("client_secret", provider.client_secret.as_str())]);
-        // Both form() calls add form bodies; reqwest's final call replaces the previous form.
         let full_form = [
             ("grant_type", "authorization_code"), ("code", code),
             ("redirect_uri", callback.as_str()), ("client_id", provider.client_id.as_str()),
-            ("code_verifier", verifier), ("client_secret", provider.client_secret.as_str())
+            ("code_verifier", verifier), ("client_secret", provider.client_secret.as_str()),
         ];
-        request = state.http.post(&provider.token_url).form(&full_form);
-    }
+        state.http.post(&provider.token_url).form(&full_form)
+    };
     let response = request.send().await.map_err(|_| AppError::upstream())?;
     if !response.status().is_success() { return Err(AppError::upstream()); }
     let tokens: Value = response.json().await.map_err(|_| AppError::upstream())?;
