@@ -6,6 +6,8 @@ mod auth;
 mod management;
 mod rate_limit;
 mod refresh;
+mod mfa;
+mod passkey;
 
 use axum::{
     extract::DefaultBodyLimit, http::{StatusCode, header, HeaderName, HeaderValue}, response::{IntoResponse, Response},
@@ -86,6 +88,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/auth/providers", get(auth::providers))
+        .route("/mfa", get(mfa::page))
+        .route("/mfa/status", get(mfa::status))
+        .route("/mfa/enroll/start", post(mfa::enroll_start))
+        .route("/mfa/enroll/confirm", post(mfa::enroll_confirm))
+        .route("/mfa/verify", post(mfa::verify))
+        .route("/mfa/disable", post(mfa::disable))
+        .route("/passkeys/register/start", post(passkey::register_start))
+        .route("/passkeys/register/finish", post(passkey::register_finish))
+        .route("/passkeys/login/start", post(passkey::login_start))
+        .route("/passkeys/login/finish", post(passkey::login_finish))
+        .route("/me/passkeys", get(passkey::list))
+        .route("/me/passkeys/{id}", axum::routing::delete(passkey::remove))
         .route("/oauth/authorize", get(auth::authorize))
         .route("/consent", get(auth::consent_page))
         .route("/oauth/consent/request", get(auth::consent_details))
