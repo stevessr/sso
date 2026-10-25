@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>选择登录方式 · SSO</title>
+<link rel="stylesheet" href="/assets/app.css"></head>
+<body><main style="max-width:620px;margin:5vh auto;padding:24px">
+<section class="card">
+<div class="eyebrow">SSO Identity Gateway</div><h1>选择登录方式</h1>
+<p class="description">验证身份后才会继续原来的 OAuth2 应用授权请求。你可以使用已注册的 Passkey，或关联的第三方身份提供商。</p>
+<h2>使用 Passkey</h2><p class="small">输入账户 ID（可在账户中心查看），然后使用设备密码、指纹、安全密钥等验证。</p>
+<label for="account">账户 ID</label><input id="account" autocomplete="username" placeholder="账户 UUID">
+<div class="actions"><button id="passkey-submit">使用 Passkey 继续</button></div>
+<h2>使用其他账户登录</h2><div id="provider-buttons" class="provider-links"></div>
+<p role="status" id="login-error" class="small"></p>
+</section></main><script src="/assets/login-choice.js" defer></script></body></html>
