@@ -42,28 +42,117 @@ pub struct ClientInput {
     redirect_uris: Vec<String>,
     #[serde(default)] public_client: bool,
 }
-async fn new_client(state: &AppState, input: ClientInput) -> AppResult<Value> {
+async fn new_client(state: &AppState, input: ClientInput, owner: Option<&str>) -> AppResult<Value> {
     if input.client_name.trim().is_empty() || input.client_name.len() > 120 { return Err(AppError::bad("invalid client name")); }
     validate_redirects(&input.redirect_uris)?;
     let client_id=format!("sso_{}", uuid::Uuid::new_v4().simple());
     let secret=if input.public_client { None } else { Some(crypto::random_token()) };
     let secret_hash=secret.as_ref().map(|s|crypto::digest(s));
+    let mut tx = state.db.pool.begin().await?;
+    if let Some(user) = owner {
+        let count = sqlx::query(&state.db.q("SELECT COUNT(*) AS n FROM client_owners WHERE user_id=?"))
+            .bind(user).fetch_one(&mut *tx).await?.try_get::<i64,_>("n")?;
+        if count >= 10 { return Err(AppError::bad("user client quota reached (10)")); }
+    }
     sqlx::query(&state.db.q("INSERT INTO clients (id,name,secret_hash,redirects,created,enabled) VALUES (?,?,?,?,?,1)"))
         .bind(&client_id).bind(&input.client_name).bind(secret_hash)
         .bind(serde_json::to_string(&input.redirect_uris).map_err(|_| AppError::bad("invalid URIs"))?)
-        .bind(crypto::now()).execute(&state.db.pool).await?;
+        .bind(crypto::now()).execute(&mut *tx).await?;
+    if let Some(user) = owner {
+        sqlx::query(&state.db.q("INSERT INTO client_owners (client_id,user_id) VALUES (?,?)"))
+            .bind(&client_id).bind(user).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
     Ok(json!({"client_id":client_id,"client_secret":secret,"client_name":input.client_name,
         "redirect_uris":input.redirect_uris,"grant_types":["authorization_code"],
         "response_types":["code"],"token_endpoint_auth_method":if input.public_client{"none"}else{"client_secret_post"}}))
 }
 pub async fn register(State(state): State<AppState>, headers: HeaderMap, Json(input): Json<ClientInput>) -> AppResult<(StatusCode,Json<Value>)> {
     registration_allowed(&state,&headers)?;
-    Ok((StatusCode::CREATED,Json(new_client(&state,input).await?)))
+    Ok((StatusCode::CREATED,Json(new_client(&state,input,None).await?)))
 }
 pub async fn create_client(State(state): State<AppState>, headers: HeaderMap, Json(input): Json<ClientInput>) -> AppResult<(StatusCode,Json<Value>)> {
     admin(&state,&headers)?;
-    Ok((StatusCode::CREATED,Json(new_client(&state,input).await?)))
+    Ok((StatusCode::CREATED,Json(new_client(&state,input,None).await?)))
 }
+/// A signed-in user may register a bounded number of clients without sharing
+/// the global machine registration token or receiving administrative privileges.
+pub async fn personal_create(State(state): State<AppState>, headers: HeaderMap, Json(input): Json<ClientInput>)
+    -> AppResult<(StatusCode,Json<Value>)>
+{
+    auth::require_same_origin(&state,&headers)?;
+    let user = auth::session_user(&state,&headers).await?;
+    Ok((StatusCode::CREATED,Json(new_client(&state,input,Some(&user)).await?)))
+}
+
+pub async fn personal_list(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Json<Value>> {
+    let user = auth::session_user(&state,&headers).await?;
+    let rows = sqlx::query(&state.db.q(
+        "SELECT c.id,c.name,c.redirects,c.enabled,c.secret_hash FROM clients c JOIN client_owners o ON o.client_id=c.id WHERE o.user_id=? ORDER BY c.created DESC LIMIT 10"
+    )).bind(user).fetch_all(&state.db.pool).await?;
+    let result: Vec<Value> = rows.into_iter().filter_map(|row| Some(json!({
+        "id":row.try_get::<String,_>("id").ok()?,
+        "name":row.try_get::<String,_>("name").ok()?,
+        "redirect_uris":serde_json::from_str::<Value>(&row.try_get::<String,_>("redirects").ok()?).ok()?,
+        "enabled":row.try_get::<i64,_>("enabled").ok()? == 1,
+        "public_client":row.try_get::<Option<String>,_>("secret_hash").ok()?.is_none()
+    }))).collect();
+    Ok(Json(json!(result)))
+}
+
+async fn personal_enabled(state: AppState, headers: HeaderMap, client: String, enabled: bool)
+    -> AppResult<Json<Value>>
+{
+    auth::require_same_origin(&state,&headers)?;
+    let user = auth::session_user(&state,&headers).await?;
+    let mut tx = state.db.pool.begin().await?;
+    let changed = sqlx::query(&state.db.q(
+        "UPDATE clients SET enabled=? WHERE id=? AND EXISTS (SELECT 1 FROM client_owners WHERE client_id=? AND user_id=?)"
+    )).bind(if enabled {1i64} else {0i64}).bind(&client).bind(&client).bind(&user)
+        .execute(&mut *tx).await?;
+    if changed.rows_affected() == 0 { return Err(AppError::forbidden()); }
+    if !enabled {
+        sqlx::query(&state.db.q("UPDATE tokens SET revoked=1 WHERE client_id=?"))
+            .bind(&client).execute(&mut *tx).await?;
+        sqlx::query(&state.db.q("UPDATE refresh_tokens SET revoked=1 WHERE client_id=?"))
+            .bind(&client).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(Json(json!({"client_id":client,"enabled":enabled,"old_tokens_restored":false})))
+}
+
+pub async fn personal_disable(State(state): State<AppState>, headers: HeaderMap, Path(client): Path<String>)
+    -> AppResult<Json<Value>>
+{ personal_enabled(state,headers,client,false).await }
+
+pub async fn personal_enable(State(state): State<AppState>, headers: HeaderMap, Path(client): Path<String>)
+    -> AppResult<Json<Value>>
+{ personal_enabled(state,headers,client,true).await }
+
+pub async fn personal_rotate(State(state): State<AppState>, headers: HeaderMap, Path(client): Path<String>)
+    -> AppResult<Json<Value>>
+{
+    auth::require_same_origin(&state,&headers)?;
+    let user = auth::session_user(&state,&headers).await?;
+    let mut tx = state.db.pool.begin().await?;
+    let row = sqlx::query(&state.db.q(
+        "SELECT c.secret_hash FROM clients c JOIN client_owners o ON o.client_id=c.id WHERE c.id=? AND o.user_id=?"
+    )).bind(&client).bind(&user).fetch_optional(&mut *tx).await?
+        .ok_or_else(AppError::forbidden)?;
+    if row.try_get::<Option<String>,_>("secret_hash")?.is_none() {
+        return Err(AppError::bad("public PKCE clients do not have client secrets"));
+    }
+    let secret = crypto::random_token();
+    sqlx::query(&state.db.q("UPDATE clients SET secret_hash=? WHERE id=?"))
+        .bind(crypto::digest(&secret)).bind(&client).execute(&mut *tx).await?;
+    sqlx::query(&state.db.q("UPDATE tokens SET revoked=1 WHERE client_id=?"))
+        .bind(&client).execute(&mut *tx).await?;
+    sqlx::query(&state.db.q("UPDATE refresh_tokens SET revoked=1 WHERE client_id=?"))
+        .bind(&client).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"client_id":client,"client_secret":secret,"existing_tokens_revoked":true})))
+}
+
 pub async fn clients(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Json<Value>> {
     admin(&state,&headers)?;
     let rows=sqlx::query("SELECT id,name,redirects,enabled FROM clients").fetch_all(&state.db.pool).await?;
@@ -280,7 +369,7 @@ mod tests {
         let c = new_client(&s,ClientInput{
             client_name:"CI confidential".into(),redirect_uris:vec!["https://client.example.test/cb".into()],
             public_client:false,
-        }).await.unwrap();
+        },None).await.unwrap();
         let id=c["client_id"].as_str().unwrap().to_owned();
         sqlx::query(&s.db.q("INSERT INTO tokens (token_hash,client_id,user_id,scope,expires,revoked,suspended_until) VALUES (?,?,?,?,?,0,0)"))
             .bind(crypto::digest("first")).bind(&id).bind("user").bind("profile")
