@@ -7,10 +7,10 @@ Rust OAuth2 identity broker with a Chinese MD3-inspired management interface.
 ## Features
 
 - Upstream Google and Telegram OIDC with signed ID token and issuer/audience/nonce validation; X OAuth2/PKCE using authenticated users/me; custom OIDC/OAuth2-userinfo provider configuration.
-- Downstream OAuth2 Authorization Code + PKCE S256, one-time authorization codes, opaque bearer access tokens, userinfo and revocation.
+- Downstream OAuth2 Authorization Code + PKCE S256, explicit user consent (allow/deny), one-time authorization codes, opaque bearer access tokens, scope-restricted userinfo, RFC7662 introspection and revocation.
 - SQLite default; PostgreSQL and MySQL through SQLx runtime AnyPool.
-- Self-service OAuth client registration with admin or initial-registration bearer token, fixed redirect URI allowlists, user account binding and unbinding.
-- Cross-app policy on token exchange: permanent revoke, timed suspension (expires automatically), resume.
+- Gated dynamic client registration, strict redirect allowlists, user-managed application access/revocation and third-party account binding/unbinding; admin disable/enable, rotate client secrets and remove linked-app policies.
+- Cross-app token-exchange policies: permanent revoke, durable timed suspension that survives fresh logins, and resume. Active status is evaluated at every userinfo/introspection request.
 - Field flow graph and server-side bounded QuickJS data transformation. Provider/subject cannot be overwritten.
 - Background image upload with Material Color Utilities image quantization, HCT tonal palettes and browser-responsive light/dark schemes.
 - Optional locally built WASM AES-GCM for encrypting local configuration drafts, not for concealing OAuth credentials.
@@ -29,9 +29,9 @@ For deployed environments set SSO_PUBLIC_URL to a **HTTPS origin**, use a TLS re
 ## Downstream OAuth2 flow
 
 1. Browser redirects to GET /oauth/authorize with response_type=code, client_id, exact redirect_uri, state, code_challenge, code_challenge_method=S256, and optional provider=google|telegram|x.
-2. Server authenticates user with an upstream provider, verifies identity, redirects with a short-lived one-time authorization code and original state.
+2. Server authenticates user with an upstream provider, verifies upstream identity, and displays a first-party consent screen explaining the client and requested permissions. Declining sends access_denied; approving issues a short-lived one-time authorization code with the original state.
 3. Client POSTs to /oauth/token with grant_type=authorization_code, code, redirect_uri, code_verifier and client credentials (Basic auth or form client_id/client_secret).
-4. Call GET /oauth/userinfo with Authorization: Bearer ACCESS_TOKEN. Revoke with POST /oauth/revoke.
+4. Call GET /oauth/userinfo with Authorization: Bearer ACCESS_TOKEN. Only granted profile/email scopes are returned. Revoke with POST /oauth/revoke. Confidential OAuth clients can POST to /oauth/introspect (token, client_id, client_secret) to verify only their own access tokens; public PKCE clients cannot introspect.
 
 POST /connect/register requires Authorization: Bearer SSO_REGISTRATION_TOKEN (or SSO_ADMIN_TOKEN). Public clients still need PKCE; anonymous open registration is intentionally disabled.
 
@@ -52,13 +52,13 @@ SSO_AUTO_PORT=true tries the next 20 TCP ports only for a loopback bind, rewriti
 ## Security boundaries
 
 - Only the verified upstream subject is used for account identity; custom JS may map name/email/avatar but cannot change the subject.
-- Access tokens, authorization codes and sessions are SHA-256 hashed at rest, and codes/states are single-use.
+- Access tokens, authorization codes and sessions are SHA-256 hashed at rest, and codes/states/consent requests are single-use. A host-only HttpOnly flow cookie and current SSO session check protect browser callback linking; account linking requires a same-origin POST.
 - Linked-app rules operate on SSO-issued tokens, not the provider's own sessions or tokens. Suspended tokens resume only when unexpired and not revoked.
-- A downstream app must check token validity through the gateway whenever revocation matters; simply caching a user profile cannot enforce timely revocation.
-- Admin bearer token is kept in the browser page memory, not persisted. Never reveal it to downstream apps.
+- Client apps can call RFC7662 introspection to enforce revocation and persistent timed app blocks. Client-scoped introspection is intentionally limited to confidential clients; resource server integration and caching policy still need to be reviewed before production.
+- Admin bearer token is kept in the browser page memory, not persisted. Never reveal it to downstream apps. CSP, no-store, no-referrer, nosniff and anti-framing headers are set; HTML uses external JS and CSS.
 - The image upload now generates Material Color Utilities HCT scheme JSON at GET /theme; an average RGB fallback remains when theme loading fails.
 - WASM only protects local encrypted drafts (with a user passphrase), not server-held credentials, browser code or authentication sessions.
 
 ## Release checklist
 
-Still required before production: automated OAuth callback fixture tests, dynamic registration rate limits, complete session CSRF policy, consent UI, audit retention, versioned DB migrations, account race hardening, refresh token rotation, token introspection and downstream OIDC/JWKS support, Material Color Utilities integration, security headers and administrator RBAC.
+Still required before production: real upstream-provider integration fixtures, rate limiting and abuse detection, broader CSRF/replay threat-model review, audit logging and retention, versioned migrations, cross-database and high-concurrency tests, account race hardening, refresh token rotation, optional signed downstream OIDC ID tokens/JWKS, administrator RBAC, per-client scopes/consent history and real TLS reverse-proxy validation.
