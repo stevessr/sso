@@ -6,7 +6,7 @@ impl Db {
         if url.starts_with("sqlite://") {
             let path = url.trim_start_matches("sqlite://").split('?').next().unwrap_or("sso.db");
             if path != ":memory:" && !path.is_empty() {
-                if let Some(parent) = std::path::Path::new(path).parent() { std::fs::create_dir_all(parent)?; }
+                if let Some(parent) = std::path::Path::new(path).parent().filter(|p| !p.as_os_str().is_empty()) { std::fs::create_dir_all(parent)?; }
                 std::fs::OpenOptions::new().write(true).create(true).open(path)?;
             }
         }
@@ -25,10 +25,10 @@ impl Db {
         let statements = [
             "CREATE TABLE IF NOT EXISTS users (id VARCHAR(191) PRIMARY KEY, name TEXT NOT NULL, email TEXT, avatar TEXT, created BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS identities (provider VARCHAR(191) NOT NULL, subject VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, PRIMARY KEY(provider,subject))",
-            "CREATE TABLE IF NOT EXISTS clients (id VARCHAR(191) PRIMARY KEY, name TEXT NOT NULL, secret_hash VARCHAR(191), redirects TEXT NOT NULL, created BIGINT NOT NULL, enabled INTEGER NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS auth_tx (state VARCHAR(191) PRIMARY KEY, data TEXT NOT NULL, expires BIGINT NOT NULL, used INTEGER NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS codes (code_hash VARCHAR(191) PRIMARY KEY, client_id VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, redirect_uri TEXT NOT NULL, challenge TEXT NOT NULL, scope TEXT NOT NULL, expires BIGINT NOT NULL, used INTEGER NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS tokens (token_hash VARCHAR(191) PRIMARY KEY, client_id VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, scope TEXT NOT NULL, expires BIGINT NOT NULL, revoked INTEGER NOT NULL, suspended_until BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS clients (id VARCHAR(191) PRIMARY KEY, name TEXT NOT NULL, secret_hash VARCHAR(191), redirects TEXT NOT NULL, created BIGINT NOT NULL, enabled BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS auth_tx (state VARCHAR(191) PRIMARY KEY, data TEXT NOT NULL, expires BIGINT NOT NULL, used BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS codes (code_hash VARCHAR(191) PRIMARY KEY, client_id VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, redirect_uri TEXT NOT NULL, challenge TEXT NOT NULL, scope TEXT NOT NULL, expires BIGINT NOT NULL, used BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS tokens (token_hash VARCHAR(191) PRIMARY KEY, client_id VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, scope TEXT NOT NULL, expires BIGINT NOT NULL, revoked BIGINT NOT NULL, suspended_until BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS sessions (token_hash VARCHAR(191) PRIMARY KEY, user_id VARCHAR(191) NOT NULL, expires BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS policies (id VARCHAR(191) PRIMARY KEY, source_client VARCHAR(191) NOT NULL, target_client VARCHAR(191) NOT NULL, action VARCHAR(32) NOT NULL, duration_seconds BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS mappings (provider VARCHAR(191) PRIMARY KEY, fields TEXT NOT NULL, script TEXT NOT NULL)",
