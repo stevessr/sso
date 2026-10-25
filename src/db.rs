@@ -63,6 +63,7 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::Row;
     #[tokio::test]
     async fn sqlite_schema_is_ready() {
         let db = Db::open("sqlite::memory:").await.expect("create in-memory database");
