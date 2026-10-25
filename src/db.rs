@@ -19,7 +19,7 @@ impl Db {
     pub fn q(&self, template: &str) -> String {
         if !self.postgres { return template.into(); }
         let mut n = 0;
-        template.chars().map(|c| if c == '?' { n += 1; format!("\u0024{}", n) } else { c.to_string() }).collect()
+        template.chars().map(|c| if c == '?' { n += 1; format!("${}", n) } else { c.to_string() }).collect()
     }
     async fn migrate(&self) -> Result<(), sqlx::Error> {
         let statements = [
