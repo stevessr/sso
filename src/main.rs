@@ -82,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state = AppState {
         config: Arc::new(config),
         db,
-        http: reqwest::Client::builder().timeout(Duration::from_secs(12))
+        http: reqwest::Client::builder().user_agent("SSO-Identity-Gateway/0.1").timeout(Duration::from_secs(12))
             .redirect(reqwest::redirect::Policy::none()).build()?,
     };
     let app = Router::new()
