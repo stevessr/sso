@@ -90,6 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/admin/mappings/{provider}", get(management::get_mapping).put(management::set_mapping))
         .route("/admin/mappings/{provider}/preview", post(management::mapping_preview))
         .route("/admin/background", post(management::background_upload).get(management::background))
+        .route("/theme", get(management::theme))
         .route("/", get(management::index))
         .nest_service("/wasm", ServeDir::new("web/wasm"))
         .layer(DefaultBodyLimit::max(9 * 1024 * 1024))
