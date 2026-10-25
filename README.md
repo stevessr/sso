@@ -12,7 +12,7 @@ Rust OAuth2 identity broker with a Chinese MD3-inspired management interface.
 - Self-service OAuth client registration with admin or initial-registration bearer token, fixed redirect URI allowlists, user account binding and unbinding.
 - Cross-app policy on token exchange: permanent revoke, timed suspension (expires automatically), resume.
 - Field flow graph and server-side bounded QuickJS data transformation. Provider/subject cannot be overwritten.
-- Background image upload and approximate tonal theme seed. Full Google Monet/HCT algorithm is not yet integrated.
+- Background image upload with Material Color Utilities image quantization, HCT tonal palettes and browser-responsive light/dark schemes.
 - Optional locally built WASM AES-GCM for encrypting local configuration drafts, not for concealing OAuth credentials.
 - Optional port fallback restricted to loopback interface.
 
@@ -56,7 +56,7 @@ SSO_AUTO_PORT=true tries the next 20 TCP ports only for a loopback bind, rewriti
 - Linked-app rules operate on SSO-issued tokens, not the provider's own sessions or tokens. Suspended tokens resume only when unexpired and not revoked.
 - A downstream app must check token validity through the gateway whenever revocation matters; simply caching a user profile cannot enforce timely revocation.
 - Admin bearer token is kept in the browser page memory, not persisted. Never reveal it to downstream apps.
-- Background image color sampling produces an approximate palette, not reference Google Material Monet HCT.
+- The image upload now generates Material Color Utilities HCT scheme JSON at GET /theme; an average RGB fallback remains when theme loading fails.
 - WASM only protects local encrypted drafts (with a user passphrase), not server-held credentials, browser code or authentication sessions.
 
 ## Release checklist
