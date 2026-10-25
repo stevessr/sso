@@ -305,3 +305,52 @@ pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> AppRes
     }
     Ok(([(header::SET_COOKIE,"sso_session=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax")],Json(json!({"ok":true}))).into_response())
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{net::SocketAddr, sync::Arc};
+
+    async fn fixture() -> AppState {
+        let db = Arc::new(crate::db::Db::open("sqlite::memory:").await.unwrap());
+        let config = crate::config::Config {
+            public_url: "http://localhost:3000".into(),
+            bind: "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+            auto_port: false, db_url: "sqlite::memory:".into(),
+            admin_token_hash: crypto::digest("unused"),
+            registration_token_hash: None, providers: vec![],
+        };
+        AppState { config: Arc::new(config), db, http: reqwest::Client::new() }
+    }
+
+    #[tokio::test]
+    async fn application_suspension_and_resume() {
+        let s = fixture().await;
+        sqlx::query("INSERT INTO policies (id,source_client,target_client,action,duration_seconds) VALUES ('p','source','target','suspend',600)")
+            .execute(&s.db.pool).await.unwrap();
+        sqlx::query("INSERT INTO tokens (token_hash,client_id,user_id,scope,expires,revoked,suspended_until) VALUES ('token','target','user','profile',9999999999,0,0)")
+            .execute(&s.db.pool).await.unwrap();
+        apply_policies(&s,"source","user").await.unwrap();
+        let row = sqlx::query("SELECT suspended_until FROM tokens WHERE token_hash='token'").fetch_one(&s.db.pool).await.unwrap();
+        assert!(row.try_get::<i64,_>("suspended_until").unwrap() > crypto::now());
+        sqlx::query("UPDATE policies SET action='resume' WHERE id='p'").execute(&s.db.pool).await.unwrap();
+        apply_policies(&s,"source","user").await.unwrap();
+        let row = sqlx::query("SELECT suspended_until FROM tokens WHERE token_hash='token'").fetch_one(&s.db.pool).await.unwrap();
+        assert_eq!(row.try_get::<i64,_>("suspended_until").unwrap(),0);
+    }
+
+    #[tokio::test]
+    async fn permanent_revocation_does_not_resume() {
+        let s = fixture().await;
+        sqlx::query("INSERT INTO policies (id,source_client,target_client,action,duration_seconds) VALUES ('p','source','target','revoke',0)")
+            .execute(&s.db.pool).await.unwrap();
+        sqlx::query("INSERT INTO tokens (token_hash,client_id,user_id,scope,expires,revoked,suspended_until) VALUES ('token','target','user','profile',9999999999,0,0)")
+            .execute(&s.db.pool).await.unwrap();
+        apply_policies(&s,"source","user").await.unwrap();
+        sqlx::query("UPDATE policies SET action='resume' WHERE id='p'").execute(&s.db.pool).await.unwrap();
+        apply_policies(&s,"source","user").await.unwrap();
+        let row=sqlx::query("SELECT revoked FROM tokens WHERE token_hash='token'").fetch_one(&s.db.pool).await.unwrap();
+        assert_eq!(row.try_get::<i64,_>("revoked").unwrap(),1);
+    }
+}
