@@ -12,3 +12,5 @@ button{border:0;border-radius:24px;padding:12px 25px;font:inherit;font-weight:65
 button:disabled{opacity:.5;cursor:not-allowed}.allow{background:#6750a4;color:white}.deny{background:#e7e0ec;color:#241b35}
 #message{min-height:1.5em;color:#b3261e;font-size:13px}
 @media(prefers-color-scheme:dark){body{background:#141218;color:#e6e0e9}main{background:#211f26;border-color:#46424a}.muted{color:#b5adbd}.grant{background:#302b38}.scope span{background:#4f3d71;color:#e6d7ff}.deny{background:#44404b;color:#f0e9f4}}
+
+.grant-id{margin:6px 0 0}.grant-label{margin-top:20px}.notice{font-size:13px}
