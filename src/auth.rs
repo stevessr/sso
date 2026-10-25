@@ -165,7 +165,7 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
             let secure = if state.config.public_url.starts_with("https://") { "; Secure" } else { "" };
             let cookie = format!("sso_session={session}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax{secure}");
             let next=crate::mfa::new_session_target(&state,&user_id,&crypto::digest(&session),
-                &format!("/consent?request={request_id}"),false).await?;
+                &format!("/consent?request={request_id}"),None).await?;
             Ok(([(header::SET_COOKIE,cookie)],Redirect::to(&next)).into_response())
         },
         "login" | "link" => {
@@ -179,7 +179,7 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
             // second-factor assurance into the replacement session.
             let verified_link=tx.mode=="link";
             let next=crate::mfa::new_session_target(&state,&user_id,&crypto::digest(&session),
-                "/",verified_link).await?;
+                "/",if verified_link {Some("linked")}else{None}).await?;
             Ok(([(header::SET_COOKIE,cookie)],Redirect::to(&next)).into_response())
         }
         _ => Err(AppError::bad("unknown auth transaction"))
