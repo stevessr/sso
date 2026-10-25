@@ -47,6 +47,8 @@ impl Db {
             "CREATE TABLE IF NOT EXISTS pending_consents (id VARCHAR(191) PRIMARY KEY, user_id VARCHAR(191) NOT NULL, client_id VARCHAR(191) NOT NULL, redirect_uri TEXT NOT NULL, challenge TEXT NOT NULL, scope TEXT NOT NULL, downstream_state TEXT NOT NULL, expires BIGINT NOT NULL, used BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS tokens (token_hash VARCHAR(191) PRIMARY KEY, client_id VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, scope TEXT NOT NULL, expires BIGINT NOT NULL, revoked BIGINT NOT NULL, suspended_until BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS app_access (user_id VARCHAR(191) NOT NULL, client_id VARCHAR(191) NOT NULL, suspended_until BIGINT NOT NULL DEFAULT 0, PRIMARY KEY(user_id,client_id))",
+            "CREATE TABLE IF NOT EXISTS refresh_tokens (token_hash VARCHAR(191) PRIMARY KEY, family_id VARCHAR(191) NOT NULL, client_id VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, scope TEXT NOT NULL, expires BIGINT NOT NULL, used BIGINT NOT NULL DEFAULT 0, revoked BIGINT NOT NULL DEFAULT 0)",
+            "CREATE TABLE IF NOT EXISTS refresh_access (token_hash VARCHAR(191) PRIMARY KEY, family_id VARCHAR(191) NOT NULL)",
             "CREATE TABLE IF NOT EXISTS sessions (token_hash VARCHAR(191) PRIMARY KEY, user_id VARCHAR(191) NOT NULL, expires BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS policies (id VARCHAR(191) PRIMARY KEY, source_client VARCHAR(191) NOT NULL, target_client VARCHAR(191) NOT NULL, action VARCHAR(32) NOT NULL, duration_seconds BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS mappings (provider VARCHAR(191) PRIMARY KEY, fields TEXT NOT NULL, script TEXT NOT NULL)",
