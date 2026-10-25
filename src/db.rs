@@ -21,6 +21,22 @@ impl Db {
         let mut n = 0;
         template.chars().map(|c| if c == '?' { n += 1; format!("${}", n) } else { c.to_string() }).collect()
     }
+
+    /// Remember suspensions independently of individual tokens, so logging in again
+    /// cannot bypass a temporary linked-application lockout.
+    pub async fn set_app_suspension(&self, user: &str, client: &str, until: i64) -> Result<(), sqlx::Error> {
+        let updated = sqlx::query(&self.q("UPDATE app_access SET suspended_until=? WHERE user_id=? AND client_id=?"))
+            .bind(until).bind(user).bind(client).execute(&self.pool).await?;
+        if updated.rows_affected() != 0 { return Ok(()); }
+        let inserted = sqlx::query(&self.q("INSERT INTO app_access (user_id,client_id,suspended_until) VALUES (?,?,?)"))
+            .bind(user).bind(client).bind(until).execute(&self.pool).await;
+        if inserted.is_err() {
+            // Another request may have won the unique-key race.
+            sqlx::query(&self.q("UPDATE app_access SET suspended_until=? WHERE user_id=? AND client_id=?"))
+                .bind(until).bind(user).bind(client).execute(&self.pool).await?;
+        }
+        Ok(())
+    }
     async fn migrate(&self) -> Result<(), sqlx::Error> {
         let statements = [
             "CREATE TABLE IF NOT EXISTS users (id VARCHAR(191) PRIMARY KEY, name TEXT NOT NULL, email TEXT, avatar TEXT, created BIGINT NOT NULL)",
@@ -29,6 +45,7 @@ impl Db {
             "CREATE TABLE IF NOT EXISTS auth_tx (state VARCHAR(191) PRIMARY KEY, data TEXT NOT NULL, expires BIGINT NOT NULL, used BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS codes (code_hash VARCHAR(191) PRIMARY KEY, client_id VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, redirect_uri TEXT NOT NULL, challenge TEXT NOT NULL, scope TEXT NOT NULL, expires BIGINT NOT NULL, used BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS tokens (token_hash VARCHAR(191) PRIMARY KEY, client_id VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, scope TEXT NOT NULL, expires BIGINT NOT NULL, revoked BIGINT NOT NULL, suspended_until BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS app_access (user_id VARCHAR(191) NOT NULL, client_id VARCHAR(191) NOT NULL, suspended_until BIGINT NOT NULL DEFAULT 0, PRIMARY KEY(user_id,client_id))",
             "CREATE TABLE IF NOT EXISTS sessions (token_hash VARCHAR(191) PRIMARY KEY, user_id VARCHAR(191) NOT NULL, expires BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS policies (id VARCHAR(191) PRIMARY KEY, source_client VARCHAR(191) NOT NULL, target_client VARCHAR(191) NOT NULL, action VARCHAR(32) NOT NULL, duration_seconds BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS mappings (provider VARCHAR(191) PRIMARY KEY, fields TEXT NOT NULL, script TEXT NOT NULL)",
