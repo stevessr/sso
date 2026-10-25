@@ -242,3 +242,57 @@ pub async fn theme() -> AppResult<Json<Value>> {
     let data=serde_json::from_str(&json).map_err(|_|AppError::bad("invalid Material theme"))?;
     Ok(Json(data))
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{net::SocketAddr, sync::Arc};
+    async fn fixture() -> (AppState, HeaderMap) {
+        let db = Arc::new(crate::db::Db::open("sqlite::memory:").await.unwrap());
+        let cfg = crate::config::Config {
+            public_url:"http://localhost:3000".into(),
+            bind:"127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+            auto_port:false,db_url:"sqlite::memory:".into(),
+            admin_token_hash:crypto::digest("ci-local-admin-secret"),
+            registration_token_hash:None,providers:vec![],
+        };
+        let mut headers=HeaderMap::new();
+        headers.insert(header::AUTHORIZATION,"Bearer ci-local-admin-secret".parse().unwrap());
+        (AppState{config:Arc::new(cfg),db,http:reqwest::Client::new()},headers)
+    }
+    #[test]
+    fn strict_redirect_validation() {
+        assert!(validate_redirects(&["https://app.example.test/callback".into()]).is_ok());
+        assert!(validate_redirects(&["http://127.0.0.1:8080/callback".into()]).is_ok());
+        assert!(validate_redirects(&["http://app.example.test/callback".into()]).is_err());
+        assert!(validate_redirects(&["https://alice@app.example.test/callback".into()]).is_err());
+        assert!(validate_redirects(&["https://app.example.test/callback#fragment".into()]).is_err());
+        assert!(validate_redirects(&[]).is_err());
+    }
+    #[tokio::test]
+    async fn disabling_and_reenabling_never_revives_old_access_tokens() {
+        let (s,admin_headers)=fixture().await;
+        let c = new_client(&s,ClientInput{
+            client_name:"CI confidential".into(),redirect_uris:vec!["https://client.example.test/cb".into()],
+            public_client:false,
+        }).await.unwrap();
+        let id=c["client_id"].as_str().unwrap().to_owned();
+        sqlx::query(&s.db.q("INSERT INTO tokens (token_hash,client_id,user_id,scope,expires,revoked,suspended_until) VALUES (?,?,?,?,?,0,0)"))
+            .bind(crypto::digest("first")).bind(&id).bind("user").bind("profile")
+            .bind(crypto::now()+300).execute(&s.db.pool).await.unwrap();
+        disable_client(State(s.clone()),admin_headers.clone(),Path(id.clone())).await.unwrap();
+        enable_client(State(s.clone()),admin_headers.clone(),Path(id.clone())).await.unwrap();
+        let row=sqlx::query(&s.db.q("SELECT revoked FROM tokens WHERE token_hash=?"))
+            .bind(crypto::digest("first")).fetch_one(&s.db.pool).await.unwrap();
+        assert_eq!(row.try_get::<i64,_>("revoked").unwrap(),1);
+        let previous=c["client_secret"].as_str().unwrap();
+        let rotated=rotate_client_secret(State(s.clone()),admin_headers.clone(),Path(id.clone())).await.unwrap();
+        let replacement=rotated.0["client_secret"].as_str().unwrap();
+        assert_ne!(replacement,previous);
+        let row=sqlx::query(&s.db.q("SELECT secret_hash FROM clients WHERE id=?"))
+            .bind(&id).fetch_one(&s.db.pool).await.unwrap();
+        assert!(crypto::secure_eq_hex(&row.try_get::<String,_>("secret_hash").unwrap(),&crypto::digest(replacement)));
+        assert!(rotate_client_secret(State(s),admin_headers,Path("unknown".into())).await.is_err());
+    }
+}
