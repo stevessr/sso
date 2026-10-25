@@ -80,6 +80,12 @@ pub async fn authorize(State(state): State<AppState>, headers: HeaderMap, Query(
             .bind(&q.state).bind(crypto::now()+300).execute(&state.db.pool).await?;
         return Ok(Redirect::to(&format!("/consent?request={request_id}")).into_response());
     }
+    // No provider forced by the client: display a first-party login choice.
+    // Passkey login can establish a verified session here; on reload this
+    // same validated authorization request proceeds directly to consent.
+    if q.provider.is_none() {
+        return Ok(axum::response::Html(include_str!("../web/login-choice.html")).into_response());
+    }
     let provider = q.provider.or_else(|| state.config.providers.first().map(|p| p.id.clone()))
         .ok_or_else(|| AppError::bad("no login providers configured"))?;
     begin(&state, &provider, Transaction {
