@@ -6,7 +6,7 @@ mod auth;
 mod management;
 
 use axum::{
-    extract::DefaultBodyLimit, http::StatusCode, response::{IntoResponse, Response},
+    extract::DefaultBodyLimit, http::{StatusCode, header, HeaderName, HeaderValue}, response::{IntoResponse, Response},
     routing::{get, post}, Json, Router
 };
 use serde_json::json;
@@ -38,6 +38,18 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response { (self.status, Json(json!({"error":self.message}))).into_response() }
 }
 async fn healthz() -> Json<serde_json::Value> { Json(json!({"status":"ok","version":env!("CARGO_PKG_VERSION")})) }
+
+async fn security_headers(mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(HeaderName::from_static("referrer-policy"), HeaderValue::from_static("no-referrer"));
+    headers.insert(HeaderName::from_static("x-content-type-options"), HeaderValue::from_static("nosniff"));
+    headers.insert(HeaderName::from_static("x-frame-options"), HeaderValue::from_static("DENY"));
+    headers.insert(HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static("default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'"));
+    response
+}
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -102,8 +114,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/admin/background", post(management::background_upload).get(management::background))
         .route("/theme", get(management::theme))
         .route("/", get(management::index))
+        .nest_service("/assets", ServeDir::new("web/assets"))
         .nest_service("/wasm", ServeDir::new("web/wasm"))
         .layer(DefaultBodyLimit::max(9 * 1024 * 1024))
+        .layer(axum::middleware::map_response(security_headers))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
     tracing::info!(%bind_addr, "SSO gateway listening");
