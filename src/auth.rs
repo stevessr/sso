@@ -141,15 +141,20 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
             let redirect_uri = tx.redirect_uri.ok_or_else(|| AppError::bad("missing redirect"))?;
             check_client(&state, &client_id, &redirect_uri).await?;
             let challenge = tx.challenge.ok_or_else(|| AppError::bad("missing challenge"))?;
-            let authorization_code = crypto::random_token();
-            sqlx::query(&state.db.q("INSERT INTO codes (code_hash,client_id,user_id,redirect_uri,challenge,scope,expires,used) VALUES (?,?,?,?,?,?,?,0)"))
-                .bind(crypto::digest(&authorization_code)).bind(&client_id).bind(&user_id)
-                .bind(&redirect_uri).bind(challenge).bind(tx.scope)
-                .bind(crypto::now()+120).execute(&state.db.pool).await?;
-            let mut url = Url::parse(&redirect_uri).map_err(|_| AppError::bad("invalid redirect"))?;
-            url.query_pairs_mut().append_pair("code",&authorization_code)
-                .append_pair("state",&tx.downstream_state.unwrap_or_default());
-            Ok(Redirect::to(url.as_str()).into_response())
+            let request_id = crypto::random_token();
+            sqlx::query(&state.db.q("INSERT INTO pending_consents (id,user_id,client_id,redirect_uri,challenge,scope,downstream_state,expires,used) VALUES (?,?,?,?,?,?,?,?,0)"))
+                .bind(&request_id).bind(&user_id).bind(&client_id).bind(&redirect_uri).bind(&challenge)
+                .bind(&tx.scope).bind(tx.downstream_state.unwrap_or_default())
+                .bind(crypto::now()+300).execute(&state.db.pool).await?;
+            // A first-party browser session is needed to bind consent approval to the
+            // person who just authenticated upstream, not merely to a URL parameter.
+            let session = crypto::random_token();
+            sqlx::query(&state.db.q("INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,?,?)"))
+                .bind(crypto::digest(&session)).bind(&user_id).bind(crypto::now()+7*86400)
+                .execute(&state.db.pool).await?;
+            let secure = if state.config.public_url.starts_with("https://") { "; Secure" } else { "" };
+            let cookie = format!("sso_session={session}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax{secure}");
+            Ok(([(header::SET_COOKIE,cookie)],Redirect::to(&format!("/consent?request={request_id}"))).into_response())
         },
         "login" | "link" => {
             let session = crypto::random_token();
@@ -167,6 +172,73 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
     let clear = format!("sso_flow=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax{secure}");
     response.headers_mut().append(header::SET_COOKIE, clear.parse().map_err(|_| AppError::bad("invalid flow cookie"))?);
     Ok(response)
+}
+
+
+pub async fn consent_page() -> axum::response::Html<&'static str> {
+    axum::response::Html(include_str!("../web/consent.html"))
+}
+#[derive(Deserialize)]
+pub struct ConsentRequest { request: String }
+pub async fn consent_details(State(state): State<AppState>, headers: HeaderMap,
+                             Query(q): Query<ConsentRequest>) -> AppResult<Json<Value>> {
+    let user = session_user(&state, &headers).await?;
+    let row = sqlx::query(&state.db.q(
+        "SELECT p.client_id,c.name,p.redirect_uri,p.scope,p.expires FROM pending_consents p \
+         JOIN clients c ON c.id=p.client_id AND c.enabled=1 \
+         WHERE p.id=? AND p.user_id=? AND p.expires>? AND p.used=0"))
+        .bind(&q.request).bind(&user).bind(crypto::now())
+        .fetch_optional(&state.db.pool).await?
+        .ok_or_else(|| AppError::bad("consent request expired or not owned by user"))?;
+    Ok(Json(json!({
+        "request":q.request, "client_id":row.try_get::<String,_>("client_id")?,
+        "client_name":row.try_get::<String,_>("name")?,
+        "redirect_uri":row.try_get::<String,_>("redirect_uri")?,
+        "scope":row.try_get::<String,_>("scope")?,
+        "expires":row.try_get::<i64,_>("expires")?
+    })))
+}
+#[derive(Deserialize)]
+pub struct ConsentDecision {
+    request: String,
+    decision: String,
+}
+pub async fn consent_decision(State(state): State<AppState>, headers: HeaderMap,
+                              Json(data): Json<ConsentDecision>) -> AppResult<Redirect> {
+    require_same_origin(&state, &headers)?;
+    if !["allow","deny"].contains(&data.decision.as_str()) {
+        return Err(AppError::bad("consent decision must be allow or deny"));
+    }
+    let user = session_user(&state, &headers).await?;
+    let mut tx = state.db.pool.begin().await?;
+    let row = sqlx::query(&state.db.q(
+        "SELECT p.client_id,p.redirect_uri,p.challenge,p.scope,p.downstream_state \
+         FROM pending_consents p JOIN clients c ON c.id=p.client_id AND c.enabled=1 \
+         WHERE p.id=? AND p.user_id=? AND p.used=0 AND p.expires>?"))
+        .bind(&data.request).bind(&user).bind(crypto::now())
+        .fetch_optional(&mut *tx).await?
+        .ok_or_else(|| AppError::bad("invalid or expired consent request"))?;
+    let client_id: String = row.try_get("client_id")?;
+    let redirect: String = row.try_get("redirect_uri")?;
+    let challenge: String = row.try_get("challenge")?;
+    let scope: String = row.try_get("scope")?;
+    let downstream_state: String = row.try_get("downstream_state")?;
+    let consumed = sqlx::query(&state.db.q("UPDATE pending_consents SET used=1 WHERE id=? AND user_id=? AND used=0 AND expires>?"))
+        .bind(&data.request).bind(&user).bind(crypto::now()).execute(&mut *tx).await?;
+    if consumed.rows_affected() != 1 { return Err(AppError::bad("consent request already used")); }
+    let mut target = Url::parse(&redirect).map_err(|_| AppError::bad("invalid redirect"))?;
+    if data.decision == "deny" {
+        target.query_pairs_mut().append_pair("error","access_denied").append_pair("state",&downstream_state);
+    } else {
+        let code = crypto::random_token();
+        sqlx::query(&state.db.q("INSERT INTO codes (code_hash,client_id,user_id,redirect_uri,challenge,scope,expires,used) VALUES (?,?,?,?,?,?,?,0)"))
+            .bind(crypto::digest(&code)).bind(client_id).bind(&user).bind(redirect)
+            .bind(challenge).bind(scope).bind(crypto::now()+120)
+            .execute(&mut *tx).await?;
+        target.query_pairs_mut().append_pair("code",&code).append_pair("state",&downstream_state);
+    }
+    tx.commit().await?;
+    Ok(Redirect::to(target.as_str()))
 }
 
 #[derive(Deserialize)]
