@@ -48,14 +48,14 @@ footer{font-size:12px;color:var(--outline);text-align:center;margin-top:40px}
 <main>
 <section style="margin-bottom:28px"><div class="eyebrow">Unified identity control plane</div><h1>一个身份入口，连接所有应用。</h1><p class="description">连接 Google、Telegram、X 及自定义提供商。通过统一 OAuth2 接口授权应用，并管理绑定关系、字段映射、联动策略和客户端注册。</p></section>
 <div class="grid">
-<section class="card"><h2>我的身份</h2><p class="small">登入后可绑定更多第三方账号；绑定不会自动合并其他已有用户的身份。</p><div id="user">尚未登录</div><div id="providers" class="provider-links"></div><div id="links" class="stack"></div><div class="actions"><button class="outline" id="logout">退出当前会话</button></div></section>
-<section class="card"><h2>管理员控制台</h2><p class="small">使用部署时配置的管理员令牌。令牌只保存在本页面的运行内存，不写入浏览器持久存储。</p><label for="admin-token">管理员令牌</label><input id="admin-token" type="password" autocomplete="off" placeholder="SSO_ADMIN_TOKEN"><div class="actions"><button id="admin-refresh">读取客户端和策略</button></div><h3 style="margin-top:20px">背景图与动态配色</h3><input id="background" type="file" accept="image/png,image/jpeg,image/webp"><div class="actions"><button class="tonal" id="background-upload">上传并提取主题色</button></div><p id="theme-note" class="small">从背景图提取种子色，形成近似 Material tonal palette。生产级 Monet/HCT 仍待接入。</p></section>
+<section class="card"><h2>我的身份</h2><p class="small">登入后可绑定更多第三方账号；绑定不会自动合并其他已有用户的身份。</p><div id="user">尚未登录</div><div id="providers" class="provider-links"></div><div id="links" class="stack"></div><h3 style="margin-top:20px">已连接的应用</h3><div id="apps" class="stack"></div><div class="actions"><button class="outline" id="logout">退出当前会话</button></div></section>
+<section class="card"><h2>管理员控制台</h2><p class="small">使用部署时配置的管理员令牌。令牌只保存在本页面的运行内存，不写入浏览器持久存储。</p><label for="admin-token">管理员令牌</label><input id="admin-token" type="password" autocomplete="off" placeholder="SSO_ADMIN_TOKEN"><div class="actions"><button id="admin-refresh">读取客户端和策略</button></div><h3 style="margin-top:20px">背景图与动态配色</h3><input id="background" type="file" accept="image/png,image/jpeg,image/webp"><div class="actions"><button class="tonal" id="background-upload">上传并提取主题色</button></div><p id="theme-note" class="small">从背景图提取种子色，形成近似 Material tonal palette。基于 Material Color Utilities 的 HCT 动态色板。</p></section>
 <section class="card"><h2>注册 OAuth2 客户端</h2><label>应用名称</label><input id="client-name" placeholder="My App"><label>回调地址（每行一个）</label><textarea id="client-redirects" placeholder="https://app.example.com/callback"></textarea><label><input id="client-public" type="checkbox" style="width:auto"> 公共客户端（PKCE，无 client_secret）</label><label>自助注册访问令牌（可选，留空使用管理员令牌）</label><input id="registration-token" type="password" autocomplete="off"><div class="actions"><button id="client-create">注册客户端</button></div><pre id="client-output" aria-live="polite">凭证仅在创建时返回，请妥善保存。</pre></section>
 <section class="card"><h2>跨应用联动</h2><p class="small">某个客户端换取访问令牌成功后，对同一用户的另一客户端执行操作。临时停用自动过期；永久吊销不可恢复旧令牌。</p>
-<label>源客户端 ID</label><input id="source-client" placeholder="sso_..."><label>目标客户端 ID</label><input id="target-client" placeholder="sso_..."><label>动作</label><select id="policy-action"><option value="suspend">临时停用</option><option value="resume">恢复临时停用</option><option value="revoke">永久吊销</option></select><label>临时停用秒数</label><input id="policy-duration" type="number" min="1" max="604800" value="3600"><div class="actions"><button id="policy-create">创建联动规则</button></div><pre id="policies-output" aria-live="polite">请先验证管理员令牌。</pre></section>
+<label>源客户端 ID</label><input id="source-client" placeholder="sso_..."><label>目标客户端 ID</label><input id="target-client" placeholder="sso_..."><label>动作</label><select id="policy-action"><option value="suspend">临时停用</option><option value="resume">恢复临时停用</option><option value="revoke">永久吊销</option></select><label>临时停用秒数</label><input id="policy-duration" type="number" min="1" max="604800" value="3600"><div class="actions"><button id="policy-create">创建联动规则</button></div><div id="policy-controls" class="stack"></div><details><summary>查看策略原始 JSON</summary><pre id="policies-output" aria-live="polite">请先验证管理员令牌。</pre></details></section>
 <section class="card wide"><div class="row"><div><h2>字段流动与 JavaScript 变换</h2><p class="small">可视化上游字段流向 name / email / avatar。JS 由服务端 QuickJS 沙箱执行，可返回新 profile，但绝不能修改经过验证的 provider/subject。</p></div><div><label for="mapping-provider">提供商</label><select id="mapping-provider"></select></div></div>
 <div class="grid"><div class="card" style="grid-column:span 6;box-shadow:none"><h3>字段映射 JSON</h3><textarea id="mapping-fields" rows="5">{ "name": "name", "email": "email", "avatar": "picture" }</textarea><h3 style="margin-top:18px">JS 自定义变换</h3><textarea id="mapping-script" rows="6" placeholder="return { ...input.profile, name: input.profile.name?.trim() };"></textarea><h3 style="margin-top:18px">测试上游示例 JSON</h3><textarea id="mapping-raw" rows="5">{ "sub": "1234", "name": "Example User", "email": "demo@example.test", "email_verified": true, "picture": "https://example.test/avatar.png" }</textarea><div class="actions"><button id="mapping-preview">沙箱预览</button><button class="tonal" id="mapping-save">保存服务端规则</button></div><pre id="mapping-output" aria-live="polite">{}</pre><details><summary>WASM 加密本地映射草稿</summary><p class="small">使用口令和 AES-256-GCM 加密浏览器中当前的映射草稿；不存储登录凭据。需要部署时构建 wasm-pack 模块。</p><label>本地加密口令（至少 12 字符）</label><input id="draft-pass" type="password" autocomplete="off"><div class="actions"><button class="tonal" id="draft-encrypt">加密导出</button><button class="outline" id="draft-decrypt">解密导入</button></div><textarea id="draft-payload" rows="4" placeholder="加密密文"></textarea></details></div>
-<div class="card" style="grid-column:span 6;box-shadow:none"><h3>数据流拓扑</h3><svg id="flow" viewBox="0 0 520 260" role="img" aria-label="字段映射可视化"></svg><p class="small">此图基于规则描述，真实鉴权仍发生在服务端，并以经过校验的上游账号 subject 作为身份主键。</p><h3>当前客户端</h3><pre id="clients-output">请先验证管理员令牌。</pre></div></div></section>
+<div class="card" style="grid-column:span 6;box-shadow:none"><h3>数据流拓扑</h3><svg id="flow" viewBox="0 0 520 260" role="img" aria-label="字段映射可视化"></svg><p class="small">此图基于规则描述，真实鉴权仍发生在服务端，并以经过校验的上游账号 subject 作为身份主键。</p><h3>当前客户端</h3><div id="client-controls" class="stack"></div><details><summary>查看客户端原始 JSON</summary><pre id="clients-output">请先验证管理员令牌。</pre></details></div></div></section>
 </div>
 <footer>SSO · Rust / SQLite · PostgreSQL · MySQL · OAuth2 PKCE</footer>
 </main>
@@ -68,11 +68,73 @@ function toast(s){const n=el('status');n.textContent=s;n.hidden=false;clearTimeo
 function auth(){const t=el('admin-token').value.trim();if(!t)throw Error('请输入管理员令牌');return t}
 async function api(path,opt={},token){const headers=new Headers(opt.headers||{});if(token)headers.set('Authorization','Bearer '+token);if(opt.body&&typeof opt.body==='string'&&!headers.has('Content-Type'))headers.set('Content-Type','application/json');const res=await fetch(path,{...opt,headers,credentials:'same-origin'});const json=await res.json().catch(()=>({error:'invalid server response'}));if(!res.ok)throw Error(json.error||'HTTP '+res.status);return json}
 function show(id,obj){el(id).textContent=JSON.stringify(obj,null,2)}
-async function refreshProfile(){try{const me=await api('/me');el('user').textContent=me.name+' · '+me.id;el('logout').hidden=false;const linked=await api('/me/links');const parent=el('links');parent.replaceChildren();for(const v of linked){const box=document.createElement('div');box.className='item row';const label=document.createElement('span');label.textContent=v.provider+' · '+v.subject;const btn=document.createElement('button');btn.className='danger';btn.textContent='解绑';btn.onclick=async()=>{if(!confirm('解绑 '+v.provider+'？至少保留一种登录方式。'))return;try{await api('/me/unlink/'+encodeURIComponent(v.provider),{method:'POST'});refreshProfile()}catch(e){toast(e.message)}};box.append(label,btn);parent.append(box)}renderProviders(true)}
-catch(_){el('user').textContent='尚未登录';el('links').replaceChildren();el('logout').hidden=true;renderProviders(false)}}
+async function refreshProfile(){try{const me=await api('/me');el('user').textContent=me.name+' · '+me.id;el('logout').hidden=false;const linked=await api('/me/links');const parent=el('links');parent.replaceChildren();for(const v of linked){const box=document.createElement('div');box.className='item row';const label=document.createElement('span');label.textContent=v.provider+' · '+v.subject;const btn=document.createElement('button');btn.className='danger';btn.textContent='解绑';btn.onclick=async()=>{if(!confirm('解绑 '+v.provider+'？至少保留一种登录方式。'))return;try{await api('/me/unlink/'+encodeURIComponent(v.provider),{method:'POST'});refreshProfile()}catch(e){toast(e.message)}};box.append(label,btn);parent.append(box)}renderProviders(true);await refreshApps()}
+catch(_){el('user').textContent='尚未登录';el('links').replaceChildren();el('apps').replaceChildren();el('logout').hidden=true;renderProviders(false)}}
 function renderProviders(link){const p=el('providers');p.replaceChildren();for(const prov of providers){const a=document.createElement('a');a.className='button tonal';a.textContent=(link?'绑定 ':'登录 ')+prov.label;a.href=(link?'/me/link/':'/login/')+encodeURIComponent(prov.id);p.append(a)}}
 async function loadProviders(){try{providers=await api('/auth/providers');const select=el('mapping-provider');select.replaceChildren();for(const p of providers){const op=document.createElement('option');op.value=p.id;op.textContent=p.label;select.append(op)}renderFlow()}catch(e){toast(e.message)}}
-async function refreshAdmin(){const t=auth();show('clients-output',await api('/admin/clients',{},t));show('policies-output',await api('/admin/policies',{},t));if(providers.length)await loadMapping()}
+
+async function refreshApps(){
+ const apps=await api('/me/apps');
+ const parent=el('apps');parent.replaceChildren();
+ if(!apps.length){const p=document.createElement('p');p.className='small';p.textContent='尚未授权任何客户端';parent.append(p);return}
+ for(const app of apps){
+   const node=document.createElement('div');node.className='item';
+   const header=document.createElement('div');header.className='row';
+   const title=document.createElement('b');title.textContent=app.name;
+   const status=document.createElement('span');status.className='pill';
+   status.textContent=app.blocked_until>Date.now()/1000?'临时停用至 '+new Date(app.blocked_until*1000).toLocaleString():app.active_tokens+' 个有效令牌';
+   header.append(title,status);node.append(header);
+   const desc=document.createElement('p');desc.className='small';desc.textContent=app.id+' · 授权记录 '+app.grant_count;node.append(desc);
+   const revoke=document.createElement('button');revoke.className='danger';revoke.textContent='撤销全部令牌';
+   revoke.onclick=async()=>{
+     if(!confirm('撤销 '+app.name+' 的全部访问令牌？此操作不可恢复。'))return;
+     try{const result=await api('/me/apps/'+encodeURIComponent(app.id)+'/revoke',{method:'POST'});
+       toast('已吊销 '+result.revoked+' 个令牌');await refreshApps()}catch(e){toast(e.message)}
+   };
+   node.append(revoke);parent.append(node)
+ }
+}
+function renderClientControls(clients){
+ const parent=el('client-controls');parent.replaceChildren();
+ for(const c of clients){
+   const node=document.createElement('div');node.className='item';
+   const label=document.createElement('b');label.textContent=c.name;
+   const id=document.createElement('p');id.className='small';id.textContent=c.id+(c.enabled?' · 已启用':' · 已停用');
+   node.append(label,id);
+   const actions=document.createElement('div');actions.className='actions';
+   const toggle=document.createElement('button');toggle.className=c.enabled?'danger':'tonal';
+   toggle.textContent=c.enabled?'停用并吊销令牌':'重新启用';
+   toggle.onclick=async()=>{try{
+      if(c.enabled&&!confirm('停用 '+c.name+'？全部旧令牌将永久失效。'))return;
+      await api('/admin/clients/'+encodeURIComponent(c.id)+(c.enabled?'/disable':'/enable'),{method:'POST'},auth());
+      toast('客户端状态已更新');await refreshAdmin()
+   }catch(e){toast(e.message)}};
+   const rotate=document.createElement('button');rotate.className='outline';rotate.textContent='轮换密钥';
+   rotate.onclick=async()=>{try{
+      if(!confirm('轮换 '+c.name+' 的客户端密钥？旧令牌全部失效。'))return;
+      const data=await api('/admin/clients/'+encodeURIComponent(c.id)+'/rotate',{method:'POST'},auth());
+      show('client-output',data);toast('新密钥已生成，请立即保存（只显示一次）')
+   }catch(e){toast(e.message)}};
+   actions.append(toggle,rotate);node.append(actions);parent.append(node)
+ }
+}
+function renderPolicyControls(policies){
+ const parent=el('policy-controls');parent.replaceChildren();
+ for(const p of policies){
+   const node=document.createElement('div');node.className='item';
+   const label=document.createElement('div');label.textContent=p.source_client+' → '+p.target_client+' · '+p.action+
+     (p.action==='suspend'?' · '+p.duration_seconds+' 秒':'');
+   const remove=document.createElement('button');remove.className='danger';remove.textContent='删除规则';
+   remove.onclick=async()=>{try{
+     if(!confirm('删除该应用联动规则？'))return;
+     await api('/admin/policies/'+encodeURIComponent(p.id),{method:'DELETE'},auth());
+     toast('规则已删除');await refreshAdmin()
+   }catch(e){toast(e.message)}};
+   node.append(label,remove);parent.append(node)
+ }
+}
+
+async function refreshAdmin(){const t=auth();const clients=await api('/admin/clients',{},t);const policies=await api('/admin/policies',{},t);show('clients-output',clients);show('policies-output',policies);renderClientControls(clients);renderPolicyControls(policies);if(providers.length)await loadMapping()}
 async function loadMapping(){const id=el('mapping-provider').value;if(!id)return;const m=await api('/admin/mappings/'+encodeURIComponent(id),{},auth());el('mapping-fields').value=JSON.stringify(m.fields,null,2);el('mapping-script').value=m.script;renderFlow()}
 function readMap(){return{fields:JSON.parse(el('mapping-fields').value),script:el('mapping-script').value}}
 function renderFlow(){const svg=el('flow');svg.replaceChildren();let fields;try{fields=JSON.parse(el('mapping-fields').value)}catch(_){fields={}}const NS='http://www.w3.org/2000/svg';const node=(tag,attrs,text)=>{const n=document.createElementNS(NS,tag);for(const [k,v] of Object.entries(attrs))n.setAttribute(k,String(v));if(text)n.textContent=text;svg.append(n);return n};const items=Object.entries(fields).filter(([k,v])=>['name','email','avatar'].includes(k)&&typeof v==='string').slice(0,3);items.forEach(([target,source],i)=>{const y=32+i*72;node('rect',{x:15,y,width:182,height:48,rx:12,class:'node'});node('text',{x:27,y:y+29},source.substring(0,23));node('path',{d:'M197 '+(y+24)+' C250 '+(y+24)+', 265 '+(y+24)+', 323 '+(y+24),class:'edge'});node('circle',{cx:260,cy:y+24,r:4,class:'dot'});node('rect',{x:323,y,width:176,height:48,rx:12,class:'node'});node('text',{x:336,y:y+29},target)});if(!items.length)node('text',{x:26,y:40},'添加 JSON 字段映射以生成流图')}
