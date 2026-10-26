@@ -149,3 +149,18 @@ organization's compliance requirements.
 This process-local hourly cleaner is not a substitute for distributed rate
 limiting, schema-versioned migrations, tested disaster recovery or routine
 health monitoring. The project remains pre-production pending security gates.
+
+
+## Operational health probes and browser safety
+
+- `GET /healthz` is a lightweight process liveness probe. It does **not**
+  test storage and intentionally remains available during database incidents.
+- `GET /readyz` runs a database probe and returns HTTP 503 when storage is
+  unavailable. Use this endpoint for load balancer / Kubernetes readiness.
+- OAuth upstream callbacks use short-lived, per-flow, path-scoped HttpOnly
+  cookies, so simultaneous login tabs do not overwrite the CSRF binding.
+- Concurrent unlink requests serialize on the local user row before checking
+  the remaining identity count, preventing both external login methods from
+  being removed in a race.
+- Client/policy/mapping changes, TOTP setup/disable, and Passkey registration
+  and removal write security audit events without credentials or secret keys.
