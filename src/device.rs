@@ -98,6 +98,7 @@ pub async fn decision(State(state): State<AppState>, headers:HeaderMap, Json(bod
         .bind(new_state).bind(&user).bind(digest).bind(crypto::now())
         .execute(&state.db.pool).await?;
     if changed.rows_affected()!=1 {return Err(AppError::bad("invalid_or_expired_user_code"))}
+    crate::sessions::event(&state,&user,"device.authorization",json!({"decision":new_state})).await?;
     Ok(Json(json!({"ok":true,"status":new_state})))
 }
 
