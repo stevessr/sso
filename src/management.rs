@@ -438,6 +438,38 @@ mod tests {
         assert!(validate_redirects(&[]).is_err());
     }
     #[tokio::test]
+    async fn sensitive_client_actions_are_audited_without_storing_secrets() {
+        let (state, headers) = fixture().await;
+        let created = new_client(&state, ClientInput {
+            client_name: "Audited client".into(),
+            redirect_uris: vec!["https://audit.example.test/cb".into()],
+            public_client: false,
+        }, None, "admin").await.unwrap();
+        let client = created["client_id"].as_str().unwrap().to_owned();
+        rotate_client_secret(State(state.clone()), headers.clone(), Path(client.clone()))
+            .await.unwrap();
+        disable_client(State(state.clone()), headers.clone(), Path(client.clone()))
+            .await.unwrap();
+        enable_client(State(state.clone()), headers.clone(), Path(client.clone()))
+            .await.unwrap();
+        let events = sqlx::query("SELECT event,actor,metadata FROM audit ORDER BY created")
+            .fetch_all(&state.db.pool).await.unwrap();
+        assert_eq!(events.len(), 4);
+        let names: Vec<String> = events.iter().map(|r| r.try_get("event").unwrap()).collect();
+        for kind in ["client.create","client.rotate_secret","client.disable","client.enable"] {
+            assert!(names.contains(&kind.to_string()), "missing audit event: {kind}");
+        }
+        for event in events {
+            let actor: String = event.try_get("actor").unwrap();
+            let metadata: String = event.try_get("metadata").unwrap();
+            assert_eq!(actor, "admin");
+            assert!(metadata.contains(&client));
+            assert!(!metadata.contains(created["client_secret"].as_str().unwrap()));
+            assert!(!metadata.contains("client_secret"));
+        }
+    }
+
+    #[tokio::test]
     async fn disabling_and_reenabling_never_revives_old_access_tokens() {
         let (s,admin_headers)=fixture().await;
         let c = new_client(&s,ClientInput{
