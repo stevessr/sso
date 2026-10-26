@@ -172,3 +172,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn readiness_fails_closed_if_database_is_unavailable() {
+        let db=Arc::new(db::Db::open("sqlite::memory:").await.unwrap());
+        let config=config::Config {
+            public_url:"http://localhost:3000".into(),
+            bind:"127.0.0.1:3000".parse().unwrap(),auto_port:false,
+            db_url:"sqlite::memory:".into(),admin_token_hash:"unused".into(),
+            registration_token_hash:None,providers:vec![],
+        };
+        let state=AppState {config:Arc::new(config),db,http:reqwest::Client::new()};
+        assert_eq!(readyz(axum::extract::State(state.clone())).await.status(),StatusCode::OK);
+        state.db.pool.close().await;
+        assert_eq!(readyz(axum::extract::State(state)).await.status(),StatusCode::SERVICE_UNAVAILABLE);
+    }
+}
