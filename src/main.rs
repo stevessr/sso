@@ -46,6 +46,18 @@ impl IntoResponse for AppError {
 }
 async fn healthz() -> Json<serde_json::Value> { Json(json!({"status":"ok","version":env!("CARGO_PKG_VERSION")})) }
 
+/// Liveness remains independent of storage; readiness probes the database so
+/// orchestration does not route authentication requests to an unavailable node.
+async fn readyz(axum::extract::State(state):axum::extract::State<AppState>) -> Response {
+    match sqlx::query("SELECT 1").execute(&state.db.pool).await {
+        Ok(_) => (StatusCode::OK,Json(json!({"status":"ready"}))).into_response(),
+        Err(error) => {
+            tracing::warn!(%error,"SSO database is not ready");
+            (StatusCode::SERVICE_UNAVAILABLE,Json(json!({"status":"not_ready"}))).into_response()
+        }
+    }
+}
+
 async fn security_headers(mut response: Response) -> Response {
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -91,6 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::spawn(maintenance::background(Arc::clone(&state.db)));
     let app = Router::new()
         .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
         .route("/auth/providers", get(auth::providers))
         .route("/mfa", get(mfa::page))
         .route("/mfa/status", get(mfa::status))
