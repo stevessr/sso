@@ -5,7 +5,6 @@
 //! Audit history is retained indefinitely unless the operator opts into a
 //! retention window via SSO_AUDIT_RETENTION_DAYS.
 use crate::{crypto, db::Db};
-use sqlx::Row;
 use std::{sync::Arc, time::Duration};
 use tokio::time::{interval, MissedTickBehavior};
 
@@ -87,6 +86,7 @@ pub async fn background(db: Arc<Db>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::Row;
 
     async fn count(db: &Db, table: &str) -> i64 {
         let statement = format!("SELECT COUNT(*) AS n FROM {table}");
