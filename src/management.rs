@@ -240,9 +240,15 @@ pub async fn create_policy(State(state): State<AppState>, headers: HeaderMap, Js
         if !exists { return Err(AppError::bad("policy client not found")); }
     }
     let id=uuid::Uuid::new_v4().to_string();
+    let mut tx = state.db.pool.begin().await?;
     sqlx::query(&state.db.q("INSERT INTO policies (id,source_client,target_client,action,duration_seconds) VALUES (?,?,?,?,?)"))
         .bind(&id).bind(&input.source_client).bind(&input.target_client).bind(&input.action)
-        .bind(input.duration_seconds).execute(&state.db.pool).await?;
+        .bind(input.duration_seconds).execute(&mut *tx).await?;
+    crate::sessions::event_tx(&state,&mut tx,"admin","policy.create",
+        json!({"policy_id":&id,"source_client":&input.source_client,
+               "target_client":&input.target_client,"action":&input.action,
+               "duration_seconds":input.duration_seconds})).await?;
+    tx.commit().await?;
     Ok((StatusCode::CREATED,Json(json!({"id":id}))))
 }
 pub async fn policies(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Json<Value>> {
@@ -261,8 +267,14 @@ pub async fn policies(State(state): State<AppState>, headers: HeaderMap) -> AppR
 
 pub async fn delete_policy(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> AppResult<Json<Value>> {
     admin(&state, &headers)?;
+    let mut tx = state.db.pool.begin().await?;
     let result = sqlx::query(&state.db.q("DELETE FROM policies WHERE id=?"))
-        .bind(&id).execute(&state.db.pool).await?;
+        .bind(&id).execute(&mut *tx).await?;
+    if result.rows_affected() > 0 {
+        crate::sessions::event_tx(&state,&mut tx,"admin","policy.delete",
+            json!({"policy_id":&id})).await?;
+    }
+    tx.commit().await?;
     Ok(Json(json!({"deleted":result.rows_affected() > 0})))
 }
 
@@ -290,12 +302,21 @@ pub async fn set_mapping(State(state): State<AppState>, headers: HeaderMap, Path
     if state.config.provider(&id).is_none() { return Err(AppError::bad("unknown provider")); }
     validate_mapping(&m)?;
     let fields=serde_json::to_string(&m.fields).map_err(|_|AppError::bad("invalid mapping"))?;
-    let result=sqlx::query(&state.db.q("UPDATE mappings SET fields=?,script=? WHERE provider=?"))
-        .bind(&fields).bind(&m.script).bind(&id).execute(&state.db.pool).await?;
-    if result.rows_affected()==0 {
+    let mut tx=state.db.pool.begin().await?;
+    // MySQL returns zero affected rows for an unchanged UPDATE. Checking row
+    // existence avoids a duplicate INSERT when a mapping is saved unchanged.
+    let exists=sqlx::query(&state.db.q("SELECT provider FROM mappings WHERE provider=?"))
+        .bind(&id).fetch_optional(&mut *tx).await?.is_some();
+    if exists {
+        sqlx::query(&state.db.q("UPDATE mappings SET fields=?,script=? WHERE provider=?"))
+            .bind(&fields).bind(&m.script).bind(&id).execute(&mut *tx).await?;
+    } else {
         sqlx::query(&state.db.q("INSERT INTO mappings (provider,fields,script) VALUES (?,?,?)"))
-            .bind(&id).bind(&fields).bind(&m.script).execute(&state.db.pool).await?;
+            .bind(&id).bind(&fields).bind(&m.script).execute(&mut *tx).await?;
     }
+    crate::sessions::event_tx(&state,&mut tx,"admin","mapping.update",
+        json!({"provider":&id,"field_count":m.fields.len(),"has_script":!m.script.is_empty()})).await?;
+    tx.commit().await?;
     Ok(Json(json!({"ok":true})))
 }
 #[derive(Deserialize)]
@@ -333,6 +354,8 @@ pub async fn background_upload(State(state): State<AppState>, headers: HeaderMap
     tokio::fs::write("data/background.mime",mime).await.map_err(|_|AppError::bad("cannot store image metadata"))?;
     tokio::fs::write("data/theme.seed",&seed).await.map_err(|_|AppError::bad("cannot store theme seed"))?;
     tokio::fs::write("data/theme.json",palette.to_string()).await.map_err(|_|AppError::bad("cannot store Monet palette"))?;
+    crate::sessions::event(&state,"admin","theme.background_upload",
+        json!({"mime":mime,"width":dims.0,"height":dims.1})).await?;
     Ok(Json(json!({"ok":true,"seed":seed,"palette":palette,"width":dims.0,"height":dims.1})))
 }
 pub async fn background() -> AppResult<Response> {
