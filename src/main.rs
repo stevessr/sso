@@ -10,6 +10,7 @@ mod mfa;
 mod passkey;
 mod device;
 mod sessions;
+mod maintenance;
 
 use axum::{
     extract::DefaultBodyLimit, http::{StatusCode, header, HeaderName, HeaderValue}, response::{IntoResponse, Response},
@@ -87,6 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         http: reqwest::Client::builder().user_agent("SSO-Identity-Gateway/0.1").timeout(Duration::from_secs(12))
             .redirect(reqwest::redirect::Policy::none()).build()?,
     };
+    tokio::spawn(maintenance::background(Arc::clone(&state.db)));
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/auth/providers", get(auth::providers))
