@@ -52,6 +52,7 @@ impl Db {
             "CREATE TABLE IF NOT EXISTS refresh_tokens (token_hash VARCHAR(191) PRIMARY KEY, family_id VARCHAR(191) NOT NULL, client_id VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, scope TEXT NOT NULL, expires BIGINT NOT NULL, used BIGINT NOT NULL DEFAULT 0, revoked BIGINT NOT NULL DEFAULT 0)",
             "CREATE TABLE IF NOT EXISTS refresh_access (token_hash VARCHAR(191) PRIMARY KEY, family_id VARCHAR(191) NOT NULL)",
             "CREATE TABLE IF NOT EXISTS sessions (token_hash VARCHAR(191) PRIMARY KEY, user_id VARCHAR(191) NOT NULL, expires BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS session_devices (token_hash VARCHAR(191) PRIMARY KEY, user_agent VARCHAR(255) NOT NULL, method VARCHAR(64) NOT NULL, created BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS totp_pending (user_id VARCHAR(191) PRIMARY KEY, sealed_secret TEXT NOT NULL, expires BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS totp_accounts (user_id VARCHAR(191) PRIMARY KEY, sealed_secret TEXT NOT NULL, enabled BIGINT NOT NULL, last_step BIGINT NOT NULL DEFAULT -1)",
             "CREATE TABLE IF NOT EXISTS recovery_codes (user_id VARCHAR(191) NOT NULL, code_hash VARCHAR(191) NOT NULL, used BIGINT NOT NULL DEFAULT 0, PRIMARY KEY(user_id,code_hash))",

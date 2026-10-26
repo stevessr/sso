@@ -9,7 +9,7 @@ pub async fn index() -> Html<&'static str> { Html(include_str!("../web/index.htm
 fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers.get(header::AUTHORIZATION).and_then(|h| h.to_str().ok()).and_then(|s| s.strip_prefix("Bearer "))
 }
-fn admin(state: &AppState, headers: &HeaderMap) -> AppResult<()> {
+pub(crate) fn admin(state: &AppState, headers: &HeaderMap) -> AppResult<()> {
     let provided=bearer(headers).ok_or_else(AppError::unauthorized)?;
     if crypto::secure_eq_hex(&crypto::digest(provided), &state.config.admin_token_hash) { Ok(()) }
     else { Err(AppError::unauthorized()) }

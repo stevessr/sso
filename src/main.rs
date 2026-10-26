@@ -9,6 +9,7 @@ mod refresh;
 mod mfa;
 mod passkey;
 mod device;
+mod sessions;
 
 use axum::{
     extract::DefaultBodyLimit, http::{StatusCode, header, HeaderName, HeaderValue}, response::{IntoResponse, Response},
@@ -120,6 +121,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/.well-known/oauth-authorization-server", get(auth::metadata))
         .route("/me", get(auth::me))
         .route("/me/links", get(auth::links))
+        .route("/me/sessions", get(sessions::list))
+        .route("/me/sessions/others/revoke", post(sessions::revoke_others))
+        .route("/me/sessions/{id}", axum::routing::delete(sessions::revoke))
         .route("/me/apps", get(auth::apps))
         .route("/me/clients", get(management::personal_list).post(management::personal_create))
         .route("/me/clients/{client}/disable", post(management::personal_disable))
@@ -131,6 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/session/logout", post(auth::logout))
         .route("/connect/register", post(management::register))
         .route("/admin/clients", get(management::clients).post(management::create_client))
+        .route("/admin/audit", get(sessions::audit))
         .route("/admin/clients/{client}/disable", post(management::disable_client))
         .route("/admin/clients/{client}/enable", post(management::enable_client))
         .route("/admin/clients/{client}/rotate", post(management::rotate_client_secret))

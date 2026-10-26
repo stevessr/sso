@@ -168,6 +168,7 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
             sqlx::query(&state.db.q("INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,?,?)"))
                 .bind(crypto::digest(&session)).bind(&user_id).bind(crypto::now()+7*86400)
                 .execute(&state.db.pool).await?;
+            crate::sessions::record(&state,&crypto::digest(&session),&headers,&format!("oauth:{}",provider_id)).await?;
             let secure = if state.config.public_url.starts_with("https://") { "; Secure" } else { "" };
             let cookie = format!("sso_session={session}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax{secure}");
             let next=crate::mfa::new_session_target(&state,&user_id,&crypto::digest(&session),
@@ -179,6 +180,7 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
             sqlx::query(&state.db.q("INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,?,?)"))
                 .bind(crypto::digest(&session)).bind(&user_id).bind(crypto::now()+7*86400)
                 .execute(&state.db.pool).await?;
+            crate::sessions::record(&state,&crypto::digest(&session),&headers,&format!("oauth:{}",provider_id)).await?;
             let secure = if state.config.public_url.starts_with("https://") { "; Secure" } else { "" };
             let cookie = format!("sso_session={session}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax{secure}");
             // Linking starts from an already assured session, so carry the
