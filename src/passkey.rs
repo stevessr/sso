@@ -296,6 +296,36 @@ mod tests{
         assert_eq!(attempt().execute(&db.pool).await.unwrap().rows_affected(),1);
         assert_eq!(attempt().execute(&db.pool).await.unwrap().rows_affected(),0);
     }
+    #[tokio::test]
+    async fn passkey_removal_requires_recent_auth_and_writes_an_audit_event() {
+        let db=std::sync::Arc::new(crate::db::Db::open("sqlite::memory:").await.unwrap());
+        let config=crate::config::Config {
+            public_url:"http://localhost:3000".into(),
+            bind:"127.0.0.1:3000".parse().unwrap(),auto_port:false,
+            db_url:"sqlite::memory:".into(),admin_token_hash:"unused".into(),
+            registration_token_hash:None,providers:vec![],
+        };
+        let state=AppState{config:std::sync::Arc::new(config),db,http:reqwest::Client::new()};
+        let session_hash=crypto::digest("alice-session");
+        sqlx::query("INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,'alice',?)")
+            .bind(&session_hash).bind(crypto::now()+600)
+            .execute(&state.db.pool).await.unwrap();
+        sqlx::query("INSERT INTO passkeys (credential_id,user_id,credential_json,label,created) VALUES ('credential','alice','{}','My passkey',0)")
+            .execute(&state.db.pool).await.unwrap();
+        let mut headers=HeaderMap::new();
+        headers.insert(header::ORIGIN,"http://localhost:3000".parse().unwrap());
+        headers.insert(header::COOKIE,"sso_session=alice-session".parse().unwrap());
+        assert!(remove(State(state.clone()),headers.clone(),Path("credential".into())).await.is_err());
+        sqlx::query("INSERT INTO session_assurance (token_hash,factor,verified_at) VALUES (?,'totp',?)")
+            .bind(&session_hash).bind(crypto::now()).execute(&state.db.pool).await.unwrap();
+        assert!(remove(State(state.clone()),headers,Path("credential".into())).await.is_ok());
+        let row=sqlx::query("SELECT event,actor,metadata FROM audit")
+            .fetch_one(&state.db.pool).await.unwrap();
+        assert_eq!(row.try_get::<String,_>("event").unwrap(),"passkey.remove");
+        assert_eq!(row.try_get::<String,_>("actor").unwrap(),"alice");
+        assert!(row.try_get::<String,_>("metadata").unwrap().contains("credential"));
+    }
+
     #[test]
     fn browser_flow_cookie_is_exact_and_constant_time_compared(){
         let mut headers=HeaderMap::new();
