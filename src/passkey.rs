@@ -93,9 +93,13 @@ pub async fn register_finish(State(state):State<AppState>,headers:HeaderMap,
     let id=id_of(&passkey);
     let label=body.label.unwrap_or_else(||"Passkey".into());
     let label=label.chars().take(60).collect::<String>();
+    let mut tx=state.db.pool.begin().await?;
     sqlx::query(&state.db.q("INSERT INTO passkeys (credential_id,user_id,credential_json,label,created) VALUES (?,?,?,?,?)"))
         .bind(&id).bind(&user).bind(serde_json::to_string(&passkey).map_err(|_|AppError::bad("passkey encoding failed"))?)
-        .bind(&label).bind(crypto::now()).execute(&state.db.pool).await?;
+        .bind(&label).bind(crypto::now()).execute(&mut *tx).await?;
+    crate::sessions::event_tx(&state,&mut tx,&user,"passkey.register",
+        json!({"credential_id":&id,"label":&label})).await?;
+    tx.commit().await?;
     Ok(Json(json!({"ok":true,"id":id,"label":label})))
 }
 #[derive(Deserialize)]
@@ -268,9 +272,13 @@ pub async fn remove(State(state):State<AppState>,headers:HeaderMap,Path(id):Path
     auth::require_same_origin(&state,&headers)?;
     let user=auth::session_user(&state,&headers).await?;
     mfa::require_recent_login(&state,&headers).await?;
+    let mut tx=state.db.pool.begin().await?;
     let changed=sqlx::query(&state.db.q("DELETE FROM passkeys WHERE credential_id=? AND user_id=?"))
-        .bind(&id).bind(user).execute(&state.db.pool).await?;
+        .bind(&id).bind(&user).execute(&mut *tx).await?;
     if changed.rows_affected()!=1 {return Err(AppError::forbidden())}
+    crate::sessions::event_tx(&state,&mut tx,&user,"passkey.remove",
+        json!({"credential_id":&id})).await?;
+    tx.commit().await?;
     Ok(Json(json!({"deleted":true})))
 }
 #[cfg(test)]
