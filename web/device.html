@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SSO · 设备授权</title>
+<link rel="stylesheet" href="/assets/device.css">
+<script src="/assets/device.js" defer></script>
+</head>
+<body>
+<main class="surface">
+<header><span class="symbol">◈</span><h1>设备授权登录</h1><p>在此浏览器批准另一个设备或命令行客户端的访问请求。</p></header>
+<section>
+<label for="user-code">设备上显示的八位验证码</label>
+<input id="user-code" autocomplete="off" inputmode="text" maxlength="9" placeholder="ABCD-2345">
+<button type="button" id="lookup">查看授权请求</button>
+<p id="feedback" aria-live="polite" role="status"></p>
+</section>
+<section id="request" hidden>
+<h2>确认应用身份</h2>
+<p>只有在设备上确实发起登录、且下面的应用名称与申请权限正确时才批准。</p>
+<dl><dt>应用</dt><dd id="client"></dd><dt>请求权限</dt><dd id="scopes"></dd></dl>
+<div class="actions"><button type="button" id="deny" class="outlined">拒绝</button><button type="button" id="allow">批准此设备</button></div>
+</section>
+<section id="sign-in" hidden>
+<h2>需要先登录 SSO</h2>
+<p>使用下方提供商在新标签页登录，并完成已启用的第二重验证；返回本页面后重新查看授权请求。</p>
+<div id="providers"></div>
+</section>
+<footer>设备授权请求十分钟内有效；授权码不能重复使用。<a href="/">返回管理控制台</a></footer>
+</main>
+</body></html>

@@ -8,6 +8,7 @@ mod rate_limit;
 mod refresh;
 mod mfa;
 mod passkey;
+mod device;
 
 use axum::{
     extract::DefaultBodyLimit, http::{StatusCode, header, HeaderName, HeaderValue}, response::{IntoResponse, Response},
@@ -109,6 +110,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/auth/callback/{provider}", get(auth::callback))
         .route("/login/{provider}", get(auth::login))
         .route("/oauth/token", post(auth::token))
+        .route("/oauth/device_authorization", post(device::authorize))
+        .route("/device", get(device::page))
+        .route("/oauth/device/request", get(device::request))
+        .route("/oauth/device/decision", post(device::decision))
         .route("/oauth/userinfo", get(auth::userinfo))
         .route("/oauth/revoke", post(auth::revoke))
         .route("/oauth/introspect", post(auth::introspect))
