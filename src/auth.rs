@@ -552,11 +552,22 @@ pub(crate) fn require_same_origin(state: &AppState, headers: &HeaderMap) -> AppR
 pub async fn unlink(State(state): State<AppState>, headers: HeaderMap, Path(provider): Path<String>) -> AppResult<Json<Value>> {
     require_same_origin(&state,&headers)?;
     let id=session_user(&state,&headers).await?;
+    let mut tx=state.db.pool.begin().await?;
+    // Serialize unlink requests for the same user. Without a row lock, two
+    // parallel requests can each observe two identities and remove the LAST
+    // two login methods, locking the account out. A no-op UPDATE acquires a
+    // write lock on all three supported database engines.
+    sqlx::query(&state.db.q("UPDATE users SET name=name WHERE id=?"))
+        .bind(&id).execute(&mut *tx).await?;
     let count: i64 = sqlx::query(&state.db.q("SELECT COUNT(*) AS n FROM identities WHERE user_id=?"))
-        .bind(&id).fetch_one(&state.db.pool).await?.try_get("n")?;
+        .bind(&id).fetch_one(&mut *tx).await?.try_get("n")?;
     if count < 2 { return Err(AppError::bad("cannot remove final login method")); }
-    sqlx::query(&state.db.q("DELETE FROM identities WHERE user_id=? AND provider=?"))
-        .bind(id).bind(provider).execute(&state.db.pool).await?;
+    let deleted=sqlx::query(&state.db.q("DELETE FROM identities WHERE user_id=? AND provider=?"))
+        .bind(&id).bind(&provider).execute(&mut *tx).await?;
+    if deleted.rows_affected()!=1 {return Err(AppError::bad("provider is not linked"));}
+    crate::sessions::event_tx(&state,&mut tx,&id,"identity.unlink",
+        json!({"provider":&provider})).await?;
+    tx.commit().await?;
     Ok(Json(json!({"ok":true})))
 }
 pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Response> {
@@ -653,8 +664,8 @@ mod tests {
         let name_b=flow_cookie_name(other).unwrap();
         assert_ne!(name_a,name_b);
         let mut headers=HeaderMap::new();
-        headers.insert(header::COOKIE,format!("{name_a}={state_b}; {name_b}={other}").parse().unwrap());
-        assert_eq!(cookie_value(&headers,&name_a),Some(state_b));
+        headers.insert(header::COOKIE,format!("{name_a}={state_a}; {name_b}={other}").parse().unwrap());
+        assert_eq!(cookie_value(&headers,&name_a),Some(state_a));
         assert_eq!(cookie_value(&headers,&name_b),Some(other));
         assert!(flow_cookie_name("not ascii 测试!").is_none());
         assert!(flow_cookie_name("too-short").is_none());
@@ -727,6 +738,34 @@ mod tests {
         apply_policies(&s,"source","user").await.unwrap();
         let row = sqlx::query("SELECT suspended_until FROM tokens WHERE token_hash='token'").fetch_one(&s.db.pool).await.unwrap();
         assert_eq!(row.try_get::<i64,_>("suspended_until").unwrap(),0);
+    }
+
+    #[tokio::test]
+    async fn parallel_identity_unlinks_cannot_remove_the_last_login_method() {
+        let s=fixture().await;
+        sqlx::query("INSERT INTO users (id,name,email,avatar,created) VALUES ('alice','Alice',NULL,NULL,0)")
+            .execute(&s.db.pool).await.unwrap();
+        for provider in ["google","github"] {
+            sqlx::query("INSERT INTO identities (provider,subject,user_id) VALUES (?,?,'alice')")
+                .bind(provider).bind(provider).execute(&s.db.pool).await.unwrap();
+        }
+        sqlx::query("INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,'alice',?)")
+            .bind(crypto::digest("alice-session")).bind(crypto::now()+300)
+            .execute(&s.db.pool).await.unwrap();
+        let mut headers=HeaderMap::new();
+        headers.insert(header::COOKIE,"sso_session=alice-session".parse().unwrap());
+        headers.insert(header::ORIGIN,"http://localhost:3000".parse().unwrap());
+        let (a,b)=tokio::join!(
+            unlink(State(s.clone()),headers.clone(),Path("google".into())),
+            unlink(State(s.clone()),headers,Path("github".into())),
+        );
+        assert_ne!(a.is_ok(),b.is_ok());
+        let left: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM identities WHERE user_id='alice'")
+            .fetch_one(&s.db.pool).await.unwrap();
+        assert_eq!(left.0,1);
+        let audited: (i64,)=sqlx::query_as("SELECT COUNT(*) FROM audit WHERE event='identity.unlink'")
+            .fetch_one(&s.db.pool).await.unwrap();
+        assert_eq!(audited.0,1);
     }
 
     #[tokio::test]
