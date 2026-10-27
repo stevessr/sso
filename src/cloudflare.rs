@@ -13,11 +13,13 @@ use std::env;
 const PAGE_SIZE: u16 = 50;
 const MAX_RESPONSE: usize = 1_048_576;
 const REVOKE_CONFIRMATION: &str = "REVOKE_ALL_ACCESS_TOKENS";
+const USER_REVOKE_CONFIRMATION: &str = "REVOKE_USER_ALL_ACCESS_APPLICATIONS";
 
 struct CloudflareSettings {
     account_id: String,
     token: String,
     revoke_enabled: bool,
+    user_revoke_enabled: bool,
 }
 
 impl CloudflareSettings {
@@ -33,6 +35,7 @@ impl CloudflareSettings {
             account_id,
             token,
             revoke_enabled: env::var("SSO_CLOUDFLARE_ENABLE_REVOKE").as_deref() == Ok("true"),
+            user_revoke_enabled: env::var("SSO_CLOUDFLARE_ENABLE_USER_REVOKE").as_deref() == Ok("true"),
         }))
     }
 }
@@ -41,10 +44,23 @@ fn valid_hex_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit())
 }
 fn valid_access_app_id(id: &str) -> bool {
-    (id.len() == 32 && valid_hex_id(id)) ||
-    (id.len() == 36 && id.chars().enumerate().all(|(i,c)| {
-        if [8,13,18,23].contains(&i) { c == '-' } else { c.is_ascii_hexdigit() }
-    }))
+    // Cloudflare Access application IDs are 32 hexadecimal characters,
+    // whereas Access group and reusable policy IDs may be hyphenated UUIDs.
+    id.len() == 32 && valid_hex_id(id)
+}
+fn valid_user_email(email: &str) -> bool {
+    if email.len() > 254 || email.is_empty() || !email.is_ascii() || email.contains(char::is_whitespace) {
+        return false;
+    }
+    let mut parts = email.split('@');
+    let (Some(local), Some(domain), None) = (parts.next(),parts.next(),parts.next()) else { return false };
+    !local.is_empty() && local.len() <= 64 && !local.starts_with('.') && !local.ends_with('.')
+        && !local.contains("..") && local.bytes().all(|c|
+            c.is_ascii_alphanumeric() || b".!#$%&'*+-/=?^_`{|}~".contains(&c))
+        && domain.len() <= 253 && domain.contains('.')
+        && domain.split('.').all(|part| !part.is_empty() && part.len() <= 63
+            && !part.starts_with('-') && !part.ends_with('-')
+            && part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-'))
 }
 fn settings() -> AppResult<CloudflareSettings> {
     CloudflareSettings::load()?.ok_or_else(|| AppError::bad("Cloudflare Zero Trust is not configured"))
@@ -95,7 +111,9 @@ pub async fn status(State(state): State<AppState>, headers: HeaderMap) -> AppRes
         "configured": cfg.is_some(),
         "account_id": cfg.as_ref().map(|c| c.account_id.as_str()),
         "revoke_enabled": cfg.as_ref().is_some_and(|c| c.revoke_enabled),
+        "user_revoke_enabled": cfg.as_ref().is_some_and(|c| c.user_revoke_enabled),
         "revoke_scope": "linked_access_app_all_users",
+        "user_revoke_scope": "specified_user_all_access_apps",
     })))
 }
 
@@ -103,7 +121,8 @@ async fn inventory(state: AppState, headers: HeaderMap, page: ListPage, kind: &s
     -> AppResult<Json<Value>> {
     management::admin(&state, &headers)?;
     let cf = settings()?;
-    let page = page.page.unwrap_or(1).clamp(1, 100);
+    let page = page.page.unwrap_or(1);
+    if page == 0 || page > 100 { return Err(AppError::bad("invalid page (1-100)")); }
     let path = format!("{kind}?page={page}&per_page={PAGE_SIZE}");
     let data = request(&state, &cf, Method::GET, &path, None).await?;
     let list = data.get("result").and_then(Value::as_array)
@@ -125,6 +144,27 @@ pub async fn groups(State(state): State<AppState>, headers: HeaderMap, Query(pag
     -> AppResult<Json<Value>> { inventory(state,headers,page,"groups").await }
 pub async fn policies(State(state): State<AppState>, headers: HeaderMap, Query(page): Query<ListPage>)
     -> AppResult<Json<Value>> { inventory(state,headers,page,"policies").await }
+
+/// Read policies attached to an individual app, distinct from reusable Access policies.
+pub async fn app_policies(State(state): State<AppState>, headers: HeaderMap,
+                         Path(app_id): Path<String>, Query(page): Query<ListPage>)
+    -> AppResult<Json<Value>> {
+    management::admin(&state, &headers)?;
+    if !valid_access_app_id(&app_id) { return Err(AppError::bad("invalid Access application ID")); }
+    let cf = settings()?;
+    let page = page.page.unwrap_or(1);
+    if page == 0 || page > 100 { return Err(AppError::bad("invalid page (1-100)")); }
+    let data = request(&state,&cf,Method::GET,
+        &format!("apps/{app_id}/policies?page={page}&per_page={PAGE_SIZE}"),None).await?;
+    let list = data.get("result").and_then(Value::as_array)
+        .ok_or_else(AppError::cloudflare_failure)?;
+    let policies: Vec<Value> = list.iter().map(|v|json!({
+        "id":v.get("id"),"name":v.get("name"),"decision":v.get("decision"),
+        "precedence":v.get("precedence"),"reusable":v.get("reusable")
+    })).collect();
+    Ok(Json(json!({"items":policies,"page":page,"per_page":PAGE_SIZE,
+                   "result_info":data.get("result_info")})))
+}
 
 pub async fn links(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Json<Value>> {
     management::admin(&state, &headers)?;
@@ -230,13 +270,59 @@ pub async fn revoke_app_tokens(State(state): State<AppState>, headers: HeaderMap
                     "scope":"all_users_of_access_application"})))
 }
 
+#[derive(Deserialize)]
+pub struct UserRevokeInput {
+    email: String,
+    confirm_email: String,
+    confirmation: String,
+}
+
+/// Cloudflare does not expose app-scoped single-user Access JWT revocation.
+/// This action targets exactly one operator-supplied identity across *all*
+/// Access applications, and must never be inferred from an unverified SSO
+/// email or triggered by a normal SSO login/logout or app-specific rule.
+pub async fn revoke_user_tokens(State(state): State<AppState>, headers: HeaderMap,
+                                Json(input): Json<UserRevokeInput>) -> AppResult<Json<Value>> {
+    management::admin(&state, &headers)?;
+    let cf = settings()?;
+    if !cf.user_revoke_enabled { return Err(AppError::forbidden()); }
+    if !valid_user_email(&input.email) || input.confirm_email != input.email ||
+       input.confirmation != USER_REVOKE_CONFIRMATION {
+        return Err(AppError::bad("explicit organization-wide user revocation confirmation required"));
+    }
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    // Store only a SHA-256 digest of the manually typed email in audit data.
+    // The actual email must reach Cloudflare, but not our retained audit log.
+    let email_hash = crate::crypto::digest(&input.email.to_ascii_lowercase());
+    let meta = json!({"operation_id":&operation_id,"email_sha256":&email_hash,
+                      "scope":"user_all_access_apps","devices":false,"warp_session_reauth":false});
+    let mut tx = state.db.pool.begin().await?;
+    crate::sessions::event_tx(&state, &mut tx, "admin",
+        "cloudflare.user.revoke.requested",meta.clone()).await?;
+    tx.commit().await?;
+    // Explicitly exclude WARP device reauthentication from ordinary Access
+    // revocation; never retry automatically on timeout/ambiguous response.
+    let result = request(&state,&cf,Method::POST,"organizations/revoke_user",Some(json!({
+        "email": input.email, "devices": false, "warp_session_reauth": false
+    }))).await?;
+    if result.get("result") != Some(&Value::Bool(true)) {
+        return Err(AppError::cloudflare_failure());
+    }
+    let mut tx = state.db.pool.begin().await?;
+    crate::sessions::event_tx(&state, &mut tx, "admin",
+        "cloudflare.user.revoke.completed",meta).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"revoked":true,"operation_id":operation_id,
+                   "scope":"user_all_access_apps","devices":false})))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn ids_cannot_escape_static_cloudflare_api_path() {
         assert!(valid_access_app_id("0123456789abcdef0123456789abcdef"));
-        assert!(valid_access_app_id("01234567-89ab-cdef-0123-456789abcdef"));
+        assert!(!valid_access_app_id("01234567-89ab-cdef-0123-456789abcdef"));
         for value in ["", "../organizations", "a/b", "0123456789abcdef0123456789abcde/",
                       "01234567-89ab-cdef-0123-456789abcdeg"] {
             assert!(!valid_access_app_id(value));
@@ -250,5 +336,27 @@ mod tests {
         })).unwrap();
         assert_eq!(correct.confirmation, REVOKE_CONFIRMATION);
         assert_ne!("revoke", REVOKE_CONFIRMATION);
+    }
+    #[test]
+    fn manual_revoke_email_validation_rejects_unicode_and_header_injection() {
+        for ok in ["alice+test@example.com","A.B@sub.example.org"] {
+            assert!(valid_user_email(ok), "{ok}");
+        }
+        for invalid in ["", "not-an-email", "foo@@example.com", "a@localhost",
+                        "alice@example.com\\r\\nBcc:evil", " Alice@example.com",
+                        "bob@example..com", "x@-example.com", "unicodeé@example.com"] {
+            assert!(!valid_user_email(invalid), "{invalid}");
+        }
+    }
+    #[test]
+    fn revoke_user_requires_account_wide_confirmation() {
+        let x: UserRevokeInput = serde_json::from_value(json!({
+            "email":"alice@example.com",
+            "confirm_email":"alice@example.com",
+            "confirmation":"REVOKE_USER_ALL_ACCESS_APPLICATIONS"
+        })).unwrap();
+        assert!(valid_user_email(&x.email));
+        assert_eq!(x.email,x.confirm_email);
+        assert_eq!(x.confirmation,USER_REVOKE_CONFIRMATION);
     }
 }
