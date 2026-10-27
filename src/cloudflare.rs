@@ -184,6 +184,28 @@ pub async fn links(State(state): State<AppState>, headers: HeaderMap) -> AppResu
     Ok(Json(json!(items)))
 }
 
+async fn persist_link(state: &AppState, client: &str, access_app_id: &str) -> AppResult<()> {
+    if !valid_access_app_id(access_app_id) {
+        return Err(AppError::bad("invalid Access application ID"));
+    }
+    let mut tx = state.db.pool.begin().await?;
+    let exists = sqlx::query(&state.db.q("SELECT id FROM clients WHERE id=?"))
+        .bind(client).fetch_optional(&mut *tx).await?.is_some();
+    if !exists { return Err(AppError::bad("unknown SSO client")); }
+    // A unique access_app_id prevents taking an app already assigned to
+    // another client. Any insert or audit failure rolls back the delete.
+    sqlx::query(&state.db.q("DELETE FROM cloudflare_app_links WHERE client_id=?"))
+        .bind(client).execute(&mut *tx).await?;
+    sqlx::query(&state.db.q(
+        "INSERT INTO cloudflare_app_links (client_id,access_app_id,created) VALUES (?,?,?)"
+    )).bind(client).bind(access_app_id).bind(crate::crypto::now())
+      .execute(&mut *tx).await?;
+    crate::sessions::event_tx(state,&mut tx,"admin","cloudflare.link.save",
+        json!({"client_id":client,"access_app_id":access_app_id})).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 #[derive(Deserialize)]
 pub struct LinkInput { access_app_id: String }
 
@@ -200,20 +222,7 @@ pub async fn put_link(State(state): State<AppState>, headers: HeaderMap,
     if app.pointer("/result/id").and_then(Value::as_str) != Some(&input.access_app_id) {
         return Err(AppError::bad("Access application does not exist"));
     }
-    let mut tx = state.db.pool.begin().await?;
-    let exists = sqlx::query(&state.db.q("SELECT id FROM clients WHERE id=?"))
-        .bind(&client).fetch_optional(&mut *tx).await?.is_some();
-    if !exists { return Err(AppError::bad("unknown SSO client")); }
-    // Transaction preserves the old mapping if another client owns the app ID.
-    sqlx::query(&state.db.q("DELETE FROM cloudflare_app_links WHERE client_id=?"))
-        .bind(&client).execute(&mut *tx).await?;
-    sqlx::query(&state.db.q(
-        "INSERT INTO cloudflare_app_links (client_id,access_app_id,created) VALUES (?,?,?)"
-    )).bind(&client).bind(&input.access_app_id).bind(crate::crypto::now())
-      .execute(&mut *tx).await?;
-    crate::sessions::event_tx(&state, &mut tx, "admin", "cloudflare.link.save",
-        json!({"client_id":&client,"access_app_id":&input.access_app_id})).await?;
-    tx.commit().await?;
+    persist_link(&state, &client, &input.access_app_id).await?;
     Ok(Json(json!({"client_id":client,"access_app_id":input.access_app_id})))
 }
 
@@ -358,5 +367,42 @@ mod tests {
         assert!(valid_user_email(&x.email));
         assert_eq!(x.email,x.confirm_email);
         assert_eq!(x.confirmation,USER_REVOKE_CONFIRMATION);
+    }
+
+    #[tokio::test]
+    async fn link_conflict_rolls_back_mapping_and_audit() {
+        use std::sync::Arc;
+        let db=Arc::new(crate::db::Db::open("sqlite::memory:").await.unwrap());
+        let config=crate::config::Config {
+            public_url:"http://localhost:3000".into(),
+            bind:"127.0.0.1:3000".parse().unwrap(),
+            auto_port:false,db_url:"sqlite::memory:".into(),
+            admin_token_hash:crate::crypto::digest("unit-test-admin"),
+            registration_token_hash:None,providers:vec![],
+        };
+        let state=AppState {config:Arc::new(config),db,http:reqwest::Client::new()};
+        for client in ["client-a","client-b"] {
+            sqlx::query(&state.db.q(
+                "INSERT INTO clients (id,name,secret_hash,redirects,created,enabled) VALUES (?,?,?,?,?,?)"
+            )).bind(client).bind(client).bind(None::<String>).bind("[]")
+              .bind(1_i64).bind(1_i64).execute(&state.db.pool).await.unwrap();
+        }
+        let app1="0123456789abcdef0123456789abcdef";
+        let app2="abcdef0123456789abcdef0123456789";
+        persist_link(&state,"client-a",app1).await.unwrap();
+        persist_link(&state,"client-b",app2).await.unwrap();
+        // Reassigning an app that another SSO client owns must fail.
+        assert!(persist_link(&state,"client-a",app2).await.is_err());
+        let row=sqlx::query(&state.db.q(
+            "SELECT access_app_id FROM cloudflare_app_links WHERE client_id=?"
+        )).bind("client-a").fetch_one(&state.db.pool).await.unwrap();
+        let access:String=row.try_get("access_app_id").unwrap();
+        assert_eq!(access,app1);
+        let row=sqlx::query(
+            "SELECT count(*) AS total FROM audit WHERE event='cloudflare.link.save'"
+        ).fetch_one(&state.db.pool).await.unwrap();
+        let count:i64=row.try_get("total").unwrap();
+        assert_eq!(count,2,"failed mapping must not leave a success audit event");
+        assert!(persist_link(&state,"unknown",app1).await.is_err());
     }
 }
