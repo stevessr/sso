@@ -65,6 +65,13 @@ pub async fn rotate(state: &AppState, client: &str, token: &str) -> AppResult<Va
     if revoked != 0 || expires <= crypto::now() {
         return Err(AppError::bad("invalid_grant"));
     }
+    // A disabled identity may not rotate a grant even if a concurrent revocation has not completed.
+    let user_id: String = row.try_get("user_id")?;
+    let access = sqlx::query(&state.db.q("SELECT disabled FROM user_access WHERE user_id=?"))
+        .bind(&user_id).fetch_optional(&mut *tx).await?;
+    if access.map(|r| r.try_get::<i64,_>("disabled").unwrap_or(1) != 0).unwrap_or(false) {
+        return Err(AppError::bad("invalid_grant"));
+    }
     let changed = sqlx::query(&state.db.q(
         "UPDATE refresh_tokens SET used=1 WHERE token_hash=? AND client_id=? AND used=0 AND revoked=0 AND expires>?"
     )).bind(&digest).bind(client).bind(crypto::now()).execute(&mut *tx).await?;
