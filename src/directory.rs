@@ -210,6 +210,7 @@ mod tests {
             .execute(&state.db.pool).await.unwrap();
         let mut headers = HeaderMap::new();
         headers.insert(header::AUTHORIZATION, "Bearer test-admin".parse().unwrap());
+        headers.insert(header::ORIGIN, "http://localhost:3000".parse().unwrap());
         (state, headers)
     }
 
