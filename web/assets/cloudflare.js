@@ -12,6 +12,7 @@
  let currentApps=[];
  let currentLinks=[];
  let revokeEnabled=false;
+ let userRevokeEnabled=false;
 
  function renderLinks(){
    const target=id('cf-links');target.replaceChildren();
@@ -45,6 +46,16 @@
      const select=node('button','tonal','填写此应用 ID');
      select.onclick=()=>{id('cf-app-id').value=app.id};
      box.append(select);
+     const policies=node('button','outline','查看应用策略');
+     policies.onclick=async()=>{
+       policies.disabled=true;
+       try{
+         const response=await api('/admin/cloudflare/apps/'+encodeURIComponent(app.id)+'/policies',{},auth());
+         id('cf-app-policies').textContent=JSON.stringify(response.items,null,2);
+       }catch(e){toast(e.message)}
+       finally{policies.disabled=false}
+     };
+     box.append(policies);
      const linked=currentLinks.some(l=>l.access_app_id===app.id);
      if(revokeEnabled&&linked){
        const revoke=node('button','danger','吊销此 Access 应用的全部令牌');
@@ -71,6 +82,8 @@
    const token=auth();
    const s=await api('/admin/cloudflare/status',{},token);
    revokeEnabled=!!s.revoke_enabled;
+   userRevokeEnabled=!!s.user_revoke_enabled;
+   id('cf-user-revoke').disabled=!userRevokeEnabled;
    id('cf-status').textContent=!s.configured
      ? '未配置 Cloudflare。请在服务端设置账户 ID 和 API Token。'
      : '已连接账户 '+s.account_id+' · '+(revokeEnabled
@@ -105,6 +118,24 @@
    }
  }
  id('cf-refresh').onclick=()=>refresh().catch(e=>{id('cf-status').textContent=e.message;toast(e.message)});
+ id('cf-user-revoke').onclick=async()=>{
+   if(!userRevokeEnabled)return;
+   const email=id('cf-user-email').value.trim();
+   if(!email){toast('请填写已在 Cloudflare 核实的邮箱');return}
+   const repeated=prompt('这会吊销该用户在整个 Cloudflare 账户下所有 Access 应用的会话。输入其完整邮箱确认：');
+   if(repeated!==email)return;
+   if(!confirm('最终确认：为 '+email+' 撤销所有 Access 应用会话？不是仅单个应用。'))return;
+   const button=id('cf-user-revoke');button.disabled=true;
+   try{
+     const result=await api('/admin/cloudflare/users/revoke',{
+       method:'POST',
+       body:JSON.stringify({email,confirm_email:repeated,confirmation:'REVOKE_USER_ALL_ACCESS_APPLICATIONS'})
+     },auth());
+     toast('Cloudflare 用户级吊销成功，审计编号 '+result.operation_id);
+     id('cf-user-email').value='';
+   }catch(e){toast(e.message)}
+   finally{button.disabled=!userRevokeEnabled}
+ };
  id('cf-link').onclick=async()=>{
    const client=id('cf-client-id').value;
    const app=id('cf-app-id').value.trim();
