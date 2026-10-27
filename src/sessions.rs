@@ -21,6 +21,17 @@ pub async fn event(state:&AppState,actor:&str,name:&str,metadata:Value)->AppResu
         .bind(metadata.to_string()).bind(crypto::now()).execute(&state.db.pool).await?;
     Ok(())
 }
+/// Add an audit event to the caller's transaction. Use this for security
+/// settings and client mutations so a failed audit write aborts the mutation.
+pub async fn event_tx(
+    state:&AppState, tx:&mut sqlx::Transaction<'_,sqlx::Any>, actor:&str, name:&str, metadata:Value
+)->AppResult<()> {
+    sqlx::query(&state.db.q("INSERT INTO audit (id,event,actor,metadata,created) VALUES (?,?,?,?,?)"))
+        .bind(uuid::Uuid::new_v4().to_string()).bind(name).bind(actor)
+        .bind(metadata.to_string()).bind(crypto::now()).execute(&mut **tx).await?;
+    Ok(())
+}
+
 pub async fn list(State(state):State<AppState>,headers:HeaderMap)->AppResult<Json<Value>>{
     let user=auth::session_user(&state,&headers).await?;
     let current=mfa::cookie_digest(&headers)?;

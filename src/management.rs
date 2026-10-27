@@ -42,7 +42,7 @@ pub struct ClientInput {
     redirect_uris: Vec<String>,
     #[serde(default)] public_client: bool,
 }
-async fn new_client(state: &AppState, input: ClientInput, owner: Option<&str>) -> AppResult<Value> {
+async fn new_client(state: &AppState, input: ClientInput, owner: Option<&str>, actor:&str) -> AppResult<Value> {
     if input.client_name.trim().is_empty() || input.client_name.len() > 120 { return Err(AppError::bad("invalid client name")); }
     validate_redirects(&input.redirect_uris)?;
     let client_id=format!("sso_{}", uuid::Uuid::new_v4().simple());
@@ -62,6 +62,9 @@ async fn new_client(state: &AppState, input: ClientInput, owner: Option<&str>) -
         sqlx::query(&state.db.q("INSERT INTO client_owners (client_id,user_id) VALUES (?,?)"))
             .bind(&client_id).bind(user).execute(&mut *tx).await?;
     }
+    crate::sessions::event_tx(state,&mut tx,actor,"client.create",
+        json!({"client_id":&client_id,"public_client":input.public_client,
+               "personal":owner.is_some()})).await?;
     tx.commit().await?;
     Ok(json!({"client_id":client_id,"client_secret":secret,"client_name":input.client_name,
         "redirect_uris":input.redirect_uris,"grant_types":["authorization_code"],
@@ -69,11 +72,11 @@ async fn new_client(state: &AppState, input: ClientInput, owner: Option<&str>) -
 }
 pub async fn register(State(state): State<AppState>, headers: HeaderMap, Json(input): Json<ClientInput>) -> AppResult<(StatusCode,Json<Value>)> {
     registration_allowed(&state,&headers)?;
-    Ok((StatusCode::CREATED,Json(new_client(&state,input,None).await?)))
+    Ok((StatusCode::CREATED,Json(new_client(&state,input,None,"registration").await?)))
 }
 pub async fn create_client(State(state): State<AppState>, headers: HeaderMap, Json(input): Json<ClientInput>) -> AppResult<(StatusCode,Json<Value>)> {
     admin(&state,&headers)?;
-    Ok((StatusCode::CREATED,Json(new_client(&state,input,None).await?)))
+    Ok((StatusCode::CREATED,Json(new_client(&state,input,None,"admin").await?)))
 }
 /// A signed-in user may register a bounded number of clients without sharing
 /// the global machine registration token or receiving administrative privileges.
@@ -82,7 +85,7 @@ pub async fn personal_create(State(state): State<AppState>, headers: HeaderMap, 
 {
     auth::require_same_origin(&state,&headers)?;
     let user = auth::session_user(&state,&headers).await?;
-    Ok((StatusCode::CREATED,Json(new_client(&state,input,Some(&user)).await?)))
+    Ok((StatusCode::CREATED,Json(new_client(&state,input,Some(&user),&user).await?)))
 }
 
 pub async fn personal_list(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Json<Value>> {
@@ -117,6 +120,9 @@ async fn personal_enabled(state: AppState, headers: HeaderMap, client: String, e
         sqlx::query(&state.db.q("UPDATE refresh_tokens SET revoked=1 WHERE client_id=?"))
             .bind(&client).execute(&mut *tx).await?;
     }
+    crate::sessions::event_tx(&state,&mut tx,&user,
+        if enabled {"client.enable"} else {"client.disable"},
+        json!({"client_id":&client,"personal":true})).await?;
     tx.commit().await?;
     Ok(Json(json!({"client_id":client,"enabled":enabled,"old_tokens_restored":false})))
 }
@@ -149,6 +155,8 @@ pub async fn personal_rotate(State(state): State<AppState>, headers: HeaderMap, 
         .bind(&client).execute(&mut *tx).await?;
     sqlx::query(&state.db.q("UPDATE refresh_tokens SET revoked=1 WHERE client_id=?"))
         .bind(&client).execute(&mut *tx).await?;
+    crate::sessions::event_tx(&state,&mut tx,&user,"client.rotate_secret",
+        json!({"client_id":&client,"personal":true})).await?;
     tx.commit().await?;
     Ok(Json(json!({"client_id":client,"client_secret":secret,"existing_tokens_revoked":true})))
 }
@@ -176,14 +184,20 @@ pub async fn disable_client(State(state): State<AppState>, headers: HeaderMap, P
         .bind(&client).execute(&mut *tx).await?;
     sqlx::query(&state.db.q("UPDATE refresh_tokens SET revoked=1 WHERE client_id=?"))
         .bind(&client).execute(&mut *tx).await?;
+    crate::sessions::event_tx(&state,&mut tx,"admin","client.disable",
+        json!({"client_id":&client,"personal":false})).await?;
     tx.commit().await?;
     Ok(Json(json!({"id":client,"enabled":false,"existing_tokens_revoked":true})))
 }
 pub async fn enable_client(State(state): State<AppState>, headers: HeaderMap, Path(client): Path<String>) -> AppResult<Json<Value>> {
     admin(&state, &headers)?;
+    let mut tx = state.db.pool.begin().await?;
     let result = sqlx::query(&state.db.q("UPDATE clients SET enabled=1 WHERE id=?"))
-        .bind(&client).execute(&state.db.pool).await?;
+        .bind(&client).execute(&mut *tx).await?;
     if result.rows_affected() == 0 { return Err(AppError::bad("unknown client")); }
+    crate::sessions::event_tx(&state,&mut tx,"admin","client.enable",
+        json!({"client_id":&client,"personal":false})).await?;
+    tx.commit().await?;
     Ok(Json(json!({"id":client,"enabled":true,"old_tokens_restored":false})))
 }
 pub async fn rotate_client_secret(State(state): State<AppState>, headers: HeaderMap, Path(client): Path<String>) -> AppResult<Json<Value>> {
@@ -201,6 +215,8 @@ pub async fn rotate_client_secret(State(state): State<AppState>, headers: Header
         .bind(&client).execute(&mut *tx).await?;
     sqlx::query(&state.db.q("UPDATE refresh_tokens SET revoked=1 WHERE client_id=?"))
         .bind(&client).execute(&mut *tx).await?;
+    crate::sessions::event_tx(&state,&mut tx,"admin","client.rotate_secret",
+        json!({"client_id":&client,"personal":false})).await?;
     tx.commit().await?;
     // This plaintext is deliberately returned only once. Do not log the response.
     Ok(Json(json!({"client_id":client,"client_secret":secret,"existing_tokens_revoked":true})))
@@ -224,9 +240,15 @@ pub async fn create_policy(State(state): State<AppState>, headers: HeaderMap, Js
         if !exists { return Err(AppError::bad("policy client not found")); }
     }
     let id=uuid::Uuid::new_v4().to_string();
+    let mut tx = state.db.pool.begin().await?;
     sqlx::query(&state.db.q("INSERT INTO policies (id,source_client,target_client,action,duration_seconds) VALUES (?,?,?,?,?)"))
         .bind(&id).bind(&input.source_client).bind(&input.target_client).bind(&input.action)
-        .bind(input.duration_seconds).execute(&state.db.pool).await?;
+        .bind(input.duration_seconds).execute(&mut *tx).await?;
+    crate::sessions::event_tx(&state,&mut tx,"admin","policy.create",
+        json!({"policy_id":&id,"source_client":&input.source_client,
+               "target_client":&input.target_client,"action":&input.action,
+               "duration_seconds":input.duration_seconds})).await?;
+    tx.commit().await?;
     Ok((StatusCode::CREATED,Json(json!({"id":id}))))
 }
 pub async fn policies(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Json<Value>> {
@@ -245,8 +267,14 @@ pub async fn policies(State(state): State<AppState>, headers: HeaderMap) -> AppR
 
 pub async fn delete_policy(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> AppResult<Json<Value>> {
     admin(&state, &headers)?;
+    let mut tx = state.db.pool.begin().await?;
     let result = sqlx::query(&state.db.q("DELETE FROM policies WHERE id=?"))
-        .bind(&id).execute(&state.db.pool).await?;
+        .bind(&id).execute(&mut *tx).await?;
+    if result.rows_affected() > 0 {
+        crate::sessions::event_tx(&state,&mut tx,"admin","policy.delete",
+            json!({"policy_id":&id})).await?;
+    }
+    tx.commit().await?;
     Ok(Json(json!({"deleted":result.rows_affected() > 0})))
 }
 
@@ -274,12 +302,21 @@ pub async fn set_mapping(State(state): State<AppState>, headers: HeaderMap, Path
     if state.config.provider(&id).is_none() { return Err(AppError::bad("unknown provider")); }
     validate_mapping(&m)?;
     let fields=serde_json::to_string(&m.fields).map_err(|_|AppError::bad("invalid mapping"))?;
-    let result=sqlx::query(&state.db.q("UPDATE mappings SET fields=?,script=? WHERE provider=?"))
-        .bind(&fields).bind(&m.script).bind(&id).execute(&state.db.pool).await?;
-    if result.rows_affected()==0 {
+    let mut tx=state.db.pool.begin().await?;
+    // MySQL returns zero affected rows for an unchanged UPDATE. Checking row
+    // existence avoids a duplicate INSERT when a mapping is saved unchanged.
+    let exists=sqlx::query(&state.db.q("SELECT provider FROM mappings WHERE provider=?"))
+        .bind(&id).fetch_optional(&mut *tx).await?.is_some();
+    if exists {
+        sqlx::query(&state.db.q("UPDATE mappings SET fields=?,script=? WHERE provider=?"))
+            .bind(&fields).bind(&m.script).bind(&id).execute(&mut *tx).await?;
+    } else {
         sqlx::query(&state.db.q("INSERT INTO mappings (provider,fields,script) VALUES (?,?,?)"))
-            .bind(&id).bind(&fields).bind(&m.script).execute(&state.db.pool).await?;
+            .bind(&id).bind(&fields).bind(&m.script).execute(&mut *tx).await?;
     }
+    crate::sessions::event_tx(&state,&mut tx,"admin","mapping.update",
+        json!({"provider":&id,"field_count":m.fields.len(),"has_script":!m.script.is_empty()})).await?;
+    tx.commit().await?;
     Ok(Json(json!({"ok":true})))
 }
 #[derive(Deserialize)]
@@ -317,6 +354,8 @@ pub async fn background_upload(State(state): State<AppState>, headers: HeaderMap
     tokio::fs::write("data/background.mime",mime).await.map_err(|_|AppError::bad("cannot store image metadata"))?;
     tokio::fs::write("data/theme.seed",&seed).await.map_err(|_|AppError::bad("cannot store theme seed"))?;
     tokio::fs::write("data/theme.json",palette.to_string()).await.map_err(|_|AppError::bad("cannot store Monet palette"))?;
+    crate::sessions::event(&state,"admin","theme.background_upload",
+        json!({"mime":mime,"width":dims.0,"height":dims.1})).await?;
     Ok(Json(json!({"ok":true,"seed":seed,"palette":palette,"width":dims.0,"height":dims.1})))
 }
 pub async fn background() -> AppResult<Response> {
@@ -385,7 +424,7 @@ mod tests {
         let rotated=personal_rotate(State(s.clone()),headers("owner-session"),Path(id.clone())).await.unwrap();
         assert_ne!(rotated.0["client_secret"],created.0["client_secret"]);
         personal_enable(State(s.clone()),headers("owner-session"),Path(id.clone())).await.unwrap();
-        for _ in 0..9 { new_client(&s,input(),Some("owner")).await.unwrap(); }
+        for _ in 0..9 { new_client(&s,input(),Some("owner"),"owner").await.unwrap(); }
         assert!(personal_create(State(s),headers("owner-session"),Json(input())).await.is_err());
     }
 
@@ -399,12 +438,44 @@ mod tests {
         assert!(validate_redirects(&[]).is_err());
     }
     #[tokio::test]
+    async fn sensitive_client_actions_are_audited_without_storing_secrets() {
+        let (state, headers) = fixture().await;
+        let created = new_client(&state, ClientInput {
+            client_name: "Audited client".into(),
+            redirect_uris: vec!["https://audit.example.test/cb".into()],
+            public_client: false,
+        }, None, "admin").await.unwrap();
+        let client = created["client_id"].as_str().unwrap().to_owned();
+        rotate_client_secret(State(state.clone()), headers.clone(), Path(client.clone()))
+            .await.unwrap();
+        disable_client(State(state.clone()), headers.clone(), Path(client.clone()))
+            .await.unwrap();
+        enable_client(State(state.clone()), headers.clone(), Path(client.clone()))
+            .await.unwrap();
+        let events = sqlx::query("SELECT event,actor,metadata FROM audit ORDER BY created")
+            .fetch_all(&state.db.pool).await.unwrap();
+        assert_eq!(events.len(), 4);
+        let names: Vec<String> = events.iter().map(|r| r.try_get("event").unwrap()).collect();
+        for kind in ["client.create","client.rotate_secret","client.disable","client.enable"] {
+            assert!(names.contains(&kind.to_string()), "missing audit event: {kind}");
+        }
+        for event in events {
+            let actor: String = event.try_get("actor").unwrap();
+            let metadata: String = event.try_get("metadata").unwrap();
+            assert_eq!(actor, "admin");
+            assert!(metadata.contains(&client));
+            assert!(!metadata.contains(created["client_secret"].as_str().unwrap()));
+            assert!(!metadata.contains("client_secret"));
+        }
+    }
+
+    #[tokio::test]
     async fn disabling_and_reenabling_never_revives_old_access_tokens() {
         let (s,admin_headers)=fixture().await;
         let c = new_client(&s,ClientInput{
             client_name:"CI confidential".into(),redirect_uris:vec!["https://client.example.test/cb".into()],
             public_client:false,
-        },None).await.unwrap();
+        },None,"admin").await.unwrap();
         let id=c["client_id"].as_str().unwrap().to_owned();
         sqlx::query(&s.db.q("INSERT INTO tokens (token_hash,client_id,user_id,scope,expires,revoked,suspended_until) VALUES (?,?,?,?,?,0,0)"))
             .bind(crypto::digest("first")).bind(&id).bind("user").bind("profile")

@@ -10,6 +10,7 @@ mod mfa;
 mod passkey;
 mod device;
 mod sessions;
+mod maintenance;
 
 use axum::{
     extract::DefaultBodyLimit, http::{StatusCode, header, HeaderName, HeaderValue}, response::{IntoResponse, Response},
@@ -44,6 +45,18 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response { (self.status, Json(json!({"error":self.message}))).into_response() }
 }
 async fn healthz() -> Json<serde_json::Value> { Json(json!({"status":"ok","version":env!("CARGO_PKG_VERSION")})) }
+
+/// Liveness remains independent of storage; readiness probes the database so
+/// orchestration does not route authentication requests to an unavailable node.
+async fn readyz(axum::extract::State(state):axum::extract::State<AppState>) -> Response {
+    match sqlx::query("SELECT 1").execute(&state.db.pool).await {
+        Ok(_) => (StatusCode::OK,Json(json!({"status":"ready"}))).into_response(),
+        Err(error) => {
+            tracing::warn!(%error,"SSO database is not ready");
+            (StatusCode::SERVICE_UNAVAILABLE,Json(json!({"status":"not_ready"}))).into_response()
+        }
+    }
+}
 
 async fn security_headers(mut response: Response) -> Response {
     let headers = response.headers_mut();
@@ -87,8 +100,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         http: reqwest::Client::builder().user_agent("SSO-Identity-Gateway/0.1").timeout(Duration::from_secs(12))
             .redirect(reqwest::redirect::Policy::none()).build()?,
     };
+    tokio::spawn(maintenance::background(Arc::clone(&state.db)));
     let app = Router::new()
         .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
         .route("/auth/providers", get(auth::providers))
         .route("/mfa", get(mfa::page))
         .route("/mfa/status", get(mfa::status))
@@ -156,4 +171,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!(%bind_addr, "SSO gateway listening");
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn readiness_fails_closed_if_database_is_unavailable() {
+        let db=Arc::new(db::Db::open("sqlite::memory:").await.unwrap());
+        let config=config::Config {
+            public_url:"http://localhost:3000".into(),
+            bind:"127.0.0.1:3000".parse().unwrap(),auto_port:false,
+            db_url:"sqlite::memory:".into(),admin_token_hash:"unused".into(),
+            registration_token_hash:None,providers:vec![],
+        };
+        let state=AppState {config:Arc::new(config),db,http:reqwest::Client::new()};
+        assert_eq!(readyz(axum::extract::State(state.clone())).await.status(),StatusCode::OK);
+        state.db.pool.close().await;
+        assert_eq!(readyz(axum::extract::State(state)).await.status(),StatusCode::SERVICE_UNAVAILABLE);
+    }
 }

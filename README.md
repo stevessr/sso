@@ -127,3 +127,40 @@ The gateway has in-memory fixed-window per-peer-IP limits (5-minute windows for 
 ## Release checklist
 
 Still required before production: real upstream-provider integration fixtures, **shared edge/distributed rate limiting** and bot detection, broader CSRF/replay threat-model review, audit logging and retention, versioned migrations, PostgreSQL/MySQL and high-concurrency tests, account race hardening, optional signed downstream OIDC ID tokens/JWKS, administrator RBAC, client-specific scope allowlists/consent history and real TLS reverse-proxy validation.
+
+
+## Automatic artifact cleanup
+
+The server prunes expired authorization transactions, device grants, authorization
+codes, pending consent requests, passkey ceremonies, MFA redirects, expired
+browser sessions, access and refresh tokens every hour (first pass at startup).
+Orphaned session metadata and refresh-family references are also deleted. The
+prune runs inside a database transaction and can safely be repeated. Used but
+unexpired refresh tokens are retained to detect reuse attacks until the entire
+family reaches its absolute expiry. A temporary database failure is logged and
+retried on the next interval.
+
+**Security audit events are retained indefinitely by default.** To opt into
+removing events older than 90 days, set `SSO_AUDIT_RETENTION_DAYS=90`; values
+must be 7–3650 (0 disables deletion). Back up the audit trail before enabling
+retention. Deleting audit history is irreversible and may conflict with your
+organization's compliance requirements.
+
+This process-local hourly cleaner is not a substitute for distributed rate
+limiting, schema-versioned migrations, tested disaster recovery or routine
+health monitoring. The project remains pre-production pending security gates.
+
+
+## Operational health probes and browser safety
+
+- `GET /healthz` is a lightweight process liveness probe. It does **not**
+  test storage and intentionally remains available during database incidents.
+- `GET /readyz` runs a database probe and returns HTTP 503 when storage is
+  unavailable. Use this endpoint for load balancer / Kubernetes readiness.
+- OAuth upstream callbacks use short-lived, per-flow, path-scoped HttpOnly
+  cookies, so simultaneous login tabs do not overwrite the CSRF binding.
+- Concurrent unlink requests serialize on the local user row before checking
+  the remaining identity count, preventing both external login methods from
+  being removed in a race.
+- Client/policy/mapping changes, TOTP setup/disable, and Passkey registration
+  and removal write security audit events without credentials or secret keys.

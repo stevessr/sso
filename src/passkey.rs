@@ -93,9 +93,13 @@ pub async fn register_finish(State(state):State<AppState>,headers:HeaderMap,
     let id=id_of(&passkey);
     let label=body.label.unwrap_or_else(||"Passkey".into());
     let label=label.chars().take(60).collect::<String>();
+    let mut tx=state.db.pool.begin().await?;
     sqlx::query(&state.db.q("INSERT INTO passkeys (credential_id,user_id,credential_json,label,created) VALUES (?,?,?,?,?)"))
         .bind(&id).bind(&user).bind(serde_json::to_string(&passkey).map_err(|_|AppError::bad("passkey encoding failed"))?)
-        .bind(&label).bind(crypto::now()).execute(&state.db.pool).await?;
+        .bind(&label).bind(crypto::now()).execute(&mut *tx).await?;
+    crate::sessions::event_tx(&state,&mut tx,&user,"passkey.register",
+        json!({"credential_id":&id,"label":&label})).await?;
+    tx.commit().await?;
     Ok(Json(json!({"ok":true,"id":id,"label":label})))
 }
 #[derive(Deserialize)]
@@ -268,9 +272,13 @@ pub async fn remove(State(state):State<AppState>,headers:HeaderMap,Path(id):Path
     auth::require_same_origin(&state,&headers)?;
     let user=auth::session_user(&state,&headers).await?;
     mfa::require_recent_login(&state,&headers).await?;
+    let mut tx=state.db.pool.begin().await?;
     let changed=sqlx::query(&state.db.q("DELETE FROM passkeys WHERE credential_id=? AND user_id=?"))
-        .bind(&id).bind(user).execute(&state.db.pool).await?;
+        .bind(&id).bind(&user).execute(&mut *tx).await?;
     if changed.rows_affected()!=1 {return Err(AppError::forbidden())}
+    crate::sessions::event_tx(&state,&mut tx,&user,"passkey.remove",
+        json!({"credential_id":&id})).await?;
+    tx.commit().await?;
     Ok(Json(json!({"deleted":true})))
 }
 #[cfg(test)]
@@ -288,6 +296,36 @@ mod tests{
         assert_eq!(attempt().execute(&db.pool).await.unwrap().rows_affected(),1);
         assert_eq!(attempt().execute(&db.pool).await.unwrap().rows_affected(),0);
     }
+    #[tokio::test]
+    async fn passkey_removal_requires_recent_auth_and_writes_an_audit_event() {
+        let db=std::sync::Arc::new(crate::db::Db::open("sqlite::memory:").await.unwrap());
+        let config=crate::config::Config {
+            public_url:"http://localhost:3000".into(),
+            bind:"127.0.0.1:3000".parse().unwrap(),auto_port:false,
+            db_url:"sqlite::memory:".into(),admin_token_hash:"unused".into(),
+            registration_token_hash:None,providers:vec![],
+        };
+        let state=AppState{config:std::sync::Arc::new(config),db,http:reqwest::Client::new()};
+        let session_hash=crypto::digest("alice-session");
+        sqlx::query("INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,'alice',?)")
+            .bind(&session_hash).bind(crypto::now()+600)
+            .execute(&state.db.pool).await.unwrap();
+        sqlx::query("INSERT INTO passkeys (credential_id,user_id,credential_json,label,created) VALUES ('credential','alice','{}','My passkey',0)")
+            .execute(&state.db.pool).await.unwrap();
+        let mut headers=HeaderMap::new();
+        headers.insert(header::ORIGIN,"http://localhost:3000".parse().unwrap());
+        headers.insert(header::COOKIE,"sso_session=alice-session".parse().unwrap());
+        assert!(remove(State(state.clone()),headers.clone(),Path("credential".into())).await.is_err());
+        sqlx::query("INSERT INTO session_assurance (token_hash,factor,verified_at) VALUES (?,'totp',?)")
+            .bind(&session_hash).bind(crypto::now()).execute(&state.db.pool).await.unwrap();
+        assert!(remove(State(state.clone()),headers,Path("credential".into())).await.is_ok());
+        let row=sqlx::query("SELECT event,actor,metadata FROM audit")
+            .fetch_one(&state.db.pool).await.unwrap();
+        assert_eq!(row.try_get::<String,_>("event").unwrap(),"passkey.remove");
+        assert_eq!(row.try_get::<String,_>("actor").unwrap(),"alice");
+        assert!(row.try_get::<String,_>("metadata").unwrap().contains("credential"));
+    }
+
     #[test]
     fn browser_flow_cookie_is_exact_and_constant_time_compared(){
         let mut headers=HeaderMap::new();

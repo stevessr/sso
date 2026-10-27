@@ -46,8 +46,11 @@ async fn begin(state: &AppState, provider_id: &str, mut tx: Transaction) -> AppR
             .append_pair("code_challenge_method","S256");
         if matches!(p.kind, crate::config::ProviderKind::Oidc) { q.append_pair("nonce",&tx.nonce); }
     }
+    // A distinct host-only cookie per flow allows multiple browser tabs to
+    // authenticate concurrently without replacing each other's CSRF binding.
+    let flow_name = flow_cookie_name(&upstream_state).ok_or_else(||AppError::bad("invalid flow state"))?;
     let secure = if state.config.public_url.starts_with("https://") { "; Secure" } else { "" };
-    let cookie = format!("sso_flow={upstream_state}; HttpOnly; Path=/; Max-Age=300; SameSite=Lax{secure}");
+    let cookie = format!("{flow_name}={upstream_state}; HttpOnly; Path=/auth/callback/{}; Max-Age=300; SameSite=Lax{secure}",p.id);
     Ok(([(header::SET_COOKIE, cookie)], Redirect::to(url.as_str())).into_response())
 }
 async fn check_client(state: &AppState, id: &str, redirect: &str) -> AppResult<()> {
@@ -111,7 +114,8 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
     let code = q.code.ok_or_else(|| AppError::bad("missing code"))?;
     // The state parameter alone does not prevent login-CSRF or cross-browser account linking.
     // Require the HttpOnly host-only cookie issued to the initiating browser.
-    let browser_state = cookie_value(&headers, "sso_flow").ok_or_else(AppError::forbidden)?;
+    let flow_name=flow_cookie_name(&st).ok_or_else(AppError::forbidden)?;
+    let browser_state = cookie_value(&headers, &flow_name).ok_or_else(AppError::forbidden)?;
     if st.len() != browser_state.len() || !bool::from(st.as_bytes().ct_eq(browser_state.as_bytes())) {
         return Err(AppError::forbidden());
     }
@@ -194,7 +198,7 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
     }?;
     // Clear the short-lived flow cookie after successful consumption.
     let secure = if state.config.public_url.starts_with("https://") { "; Secure" } else { "" };
-    let clear = format!("sso_flow=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax{secure}");
+    let clear = format!("{flow_name}=; HttpOnly; Path=/auth/callback/{provider_id}; Max-Age=0; SameSite=Lax{secure}");
     response.headers_mut().append(header::SET_COOKIE, clear.parse().map_err(|_| AppError::bad("invalid flow cookie"))?);
     Ok(response)
 }
@@ -452,6 +456,15 @@ pub async fn metadata(State(state): State<AppState>) -> Json<Value> {
         "code_challenge_methods_supported":["S256"],
         "token_endpoint_auth_methods_supported":["client_secret_post","client_secret_basic","none"]}))
 }
+/// Binds the callback to the initiating browser, isolating concurrent logins.
+fn flow_cookie_name(state:&str)->Option<String> {
+    // Reject untrusted non-ASCII state before using it in a cookie name.
+    let prefix=state.get(..16)?;
+    if !prefix.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+        return None;
+    }
+    Some(format!("sso_flow_{prefix}"))
+}
 fn cookie_value<'a>(headers: &'a HeaderMap, key: &str) -> Option<&'a str> {
     let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
     cookie.split(';').filter_map(|part| part.trim().split_once('='))
@@ -539,11 +552,22 @@ pub(crate) fn require_same_origin(state: &AppState, headers: &HeaderMap) -> AppR
 pub async fn unlink(State(state): State<AppState>, headers: HeaderMap, Path(provider): Path<String>) -> AppResult<Json<Value>> {
     require_same_origin(&state,&headers)?;
     let id=session_user(&state,&headers).await?;
+    let mut tx=state.db.pool.begin().await?;
+    // Serialize unlink requests for the same user. Without a row lock, two
+    // parallel requests can each observe two identities and remove the LAST
+    // two login methods, locking the account out. A no-op UPDATE acquires a
+    // write lock on all three supported database engines.
+    sqlx::query(&state.db.q("UPDATE users SET name=name WHERE id=?"))
+        .bind(&id).execute(&mut *tx).await?;
     let count: i64 = sqlx::query(&state.db.q("SELECT COUNT(*) AS n FROM identities WHERE user_id=?"))
-        .bind(&id).fetch_one(&state.db.pool).await?.try_get("n")?;
+        .bind(&id).fetch_one(&mut *tx).await?.try_get("n")?;
     if count < 2 { return Err(AppError::bad("cannot remove final login method")); }
-    sqlx::query(&state.db.q("DELETE FROM identities WHERE user_id=? AND provider=?"))
-        .bind(id).bind(provider).execute(&state.db.pool).await?;
+    let deleted=sqlx::query(&state.db.q("DELETE FROM identities WHERE user_id=? AND provider=?"))
+        .bind(&id).bind(&provider).execute(&mut *tx).await?;
+    if deleted.rows_affected()!=1 {return Err(AppError::bad("provider is not linked"));}
+    crate::sessions::event_tx(&state,&mut tx,&id,"identity.unlink",
+        json!({"provider":&provider})).await?;
+    tx.commit().await?;
     Ok(Json(json!({"ok":true})))
 }
 pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Response> {
@@ -630,6 +654,22 @@ mod tests {
         assert_eq!(row.try_get::<i64,_>("n").unwrap(),0);
     }
 
+    #[test]
+    fn concurrent_login_flow_cookies_are_isolated() {
+        let state_a="abcdefghijklmnopA23456789";
+        let state_b="abcdefghijklmnopB23456789";
+        let other="qrstuvwxyzABCDEF0987654321";
+        // Different 16-character prefixes represent separate outstanding flows.
+        let name_a=flow_cookie_name(state_a).unwrap();
+        let name_b=flow_cookie_name(other).unwrap();
+        assert_ne!(name_a,name_b);
+        let mut headers=HeaderMap::new();
+        headers.insert(header::COOKIE,format!("{name_a}={state_a}; {name_b}={other}").parse().unwrap());
+        assert_eq!(cookie_value(&headers,&name_a),Some(state_a));
+        assert_eq!(cookie_value(&headers,&name_b),Some(other));
+        assert!(flow_cookie_name("not ascii 测试!").is_none());
+        assert!(flow_cookie_name("too-short").is_none());
+    }
     #[tokio::test]
     async fn callback_rejects_missing_or_wrong_browser_flow_cookie() {
         let s = fixture().await;
@@ -698,6 +738,34 @@ mod tests {
         apply_policies(&s,"source","user").await.unwrap();
         let row = sqlx::query("SELECT suspended_until FROM tokens WHERE token_hash='token'").fetch_one(&s.db.pool).await.unwrap();
         assert_eq!(row.try_get::<i64,_>("suspended_until").unwrap(),0);
+    }
+
+    #[tokio::test]
+    async fn parallel_identity_unlinks_cannot_remove_the_last_login_method() {
+        let s=fixture().await;
+        sqlx::query("INSERT INTO users (id,name,email,avatar,created) VALUES ('alice','Alice',NULL,NULL,0)")
+            .execute(&s.db.pool).await.unwrap();
+        for provider in ["google","github"] {
+            sqlx::query("INSERT INTO identities (provider,subject,user_id) VALUES (?,?,'alice')")
+                .bind(provider).bind(provider).execute(&s.db.pool).await.unwrap();
+        }
+        sqlx::query("INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,'alice',?)")
+            .bind(crypto::digest("alice-session")).bind(crypto::now()+300)
+            .execute(&s.db.pool).await.unwrap();
+        let mut headers=HeaderMap::new();
+        headers.insert(header::COOKIE,"sso_session=alice-session".parse().unwrap());
+        headers.insert(header::ORIGIN,"http://localhost:3000".parse().unwrap());
+        let (a,b)=tokio::join!(
+            unlink(State(s.clone()),headers.clone(),Path("google".into())),
+            unlink(State(s.clone()),headers,Path("github".into())),
+        );
+        assert_ne!(a.is_ok(),b.is_ok());
+        let left: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM identities WHERE user_id='alice'")
+            .fetch_one(&s.db.pool).await.unwrap();
+        assert_eq!(left.0,1);
+        let audited: (i64,)=sqlx::query_as("SELECT COUNT(*) FROM audit WHERE event='identity.unlink'")
+            .fetch_one(&s.db.pool).await.unwrap();
+        assert_eq!(audited.0,1);
     }
 
     #[tokio::test]

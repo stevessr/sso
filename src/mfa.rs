@@ -166,6 +166,9 @@ pub async fn enroll_confirm(State(state):State<AppState>,headers:HeaderMap,Json(
         .bind(&user).execute(&mut *tx).await?;
     sqlx::query(&state.db.q("UPDATE pending_consents SET used=1 WHERE user_id=? AND used=0"))
         .bind(&user).execute(&mut *tx).await?;
+    crate::sessions::event_tx(&state,&mut tx,&user,"mfa.enroll",
+        json!({"factor":"totp","other_sessions_revoked":true,
+               "existing_grants_revoked":true})).await?;
     tx.commit().await?;
     Ok(Json(json!({"enabled":true,"recovery_codes":recovery})))
 }
@@ -234,6 +237,8 @@ pub async fn disable(State(state):State<AppState>,headers:HeaderMap,Json(data):J
         .bind(&user).execute(&mut *tx).await?;
     sqlx::query(&state.db.q("DELETE FROM sessions WHERE user_id=?"))
         .bind(&user).execute(&mut *tx).await?;
+    crate::sessions::event_tx(&state,&mut tx,&user,"mfa.disable",
+        json!({"factor":"totp","all_sessions_revoked":true})).await?;
     tx.commit().await?;
     Ok(Json(json!({"disabled":true,"all_sessions_revoked":true})))
 }
