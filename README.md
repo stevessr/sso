@@ -97,6 +97,65 @@ Personal clients are limited to 10 per user in this iteration. This is NOT anony
 
 OAuth2 authorization server metadata: /.well-known/oauth-authorization-server. This service is NOT YET a downstream OpenID Connect issuer; it does not mint signed downstream ID tokens or publish downstream JWKS.
 
+## Cloudflare Zero Trust Access integration (opt-in)
+
+The administrator console now provides an **account-scoped Cloudflare Access inventory**
+(applications, Access groups, and reusable Access policies), and maintains an
+audited mapping between one local SSO OAuth client and one Cloudflare Access
+application. The integration is intentionally **not a Cloudflare identity
+provider and does not change authorization policies during a login**. An SSO
+OAuth access token cannot directly stand in for a Cloudflare Access token.
+
+Set `SSO_CLOUDFLARE_ACCOUNT_ID` to the 32-character Cloudflare account ID
+and `SSO_CLOUDFLARE_API_TOKEN` to a dedicated account-scoped API token.
+Both are optional; omitting both fully disables integration. The admin UI does
+not receive the Cloudflare API token, which must remain in server-side secrets.
+Only the fixed `https://api.cloudflare.com/client/v4/` endpoint is used.
+
+Recommended API-token permissions:
+
+- For discovery: **Access: Apps and Policies Read** and
+  **Access: Organizations, Identity Providers, and Groups Read** on the
+  selected account. Policy inventory uses the reusable
+  `/accounts/{account_id}/access/policies` endpoint.
+- Only when deliberately enabling the dangerous action below, add
+  **Access: Apps and Policies Revoke** (or the minimal equivalent available
+  in your Cloudflare account). Do **not** use a Global API key.
+
+New admin endpoints (all use the existing `SSO_ADMIN_TOKEN` bearer check):
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| GET | `/admin/cloudflare/status` | Configuration status, no secrets |
+| GET | `/admin/cloudflare/apps?page=1` | Access apps (50 per page) |
+| GET | `/admin/cloudflare/groups?page=1` | Access groups (50 per page) |
+| GET | `/admin/cloudflare/policies?page=1` | Reusable Access policies (50 per page) |
+| GET | `/admin/cloudflare/links` | Local SSO client ↔ Access app links |
+| PUT | `/admin/cloudflare/links/{sso_client_id}` | JSON: `{"access_app_id":"<id>"}`, validates remotely |
+| DELETE | `/admin/cloudflare/links/{sso_client_id}` | Delete only the local mapping |
+| POST | `/admin/cloudflare/apps/{app_id}/revoke-tokens` | **Revokes every user's tokens for that linked Access app** |
+
+The revoke endpoint is disabled unless
+`SSO_CLOUDFLARE_ENABLE_REVOKE=true`. It requires a linked application,
+the exact Access app ID in `confirm_app_id`, and
+`"confirmation":"REVOKE_ALL_ACCESS_TOKENS"`. The UI additionally asks
+the operator to type the application ID. A request-intent audit event is
+committed before the external mutation, and a completion event after
+Cloudflare acknowledges success. If the Cloudflare response fails or times
+out, the operation might have completed remotely despite an error; review
+the Cloudflare control plane and audit events before retrying. No automatic
+retry is performed.
+
+**Security boundaries:** this does not add or remove Access policy
+memberships, automatically revoke users when their SSO session ends,
+synchronize directory identities, issue Access JWTs, or enforce WARP/Gateway
+device policy. Cloudflare Access app-wide revocation has a much larger
+blast radius than the SSO `/me/apps/{client}/revoke` endpoint. For per-user
+revocation, Cloudflare offers a *different*, account-wide organization
+endpoint: avoid treating it as per-app revocation. Operators should not
+enable these controls on production without reviewing identity mapping,
+permission scopes, API availability, and independent security tests.
+
 ## Configuration
 
 Default: DATABASE_URL=sqlite://sso.db
