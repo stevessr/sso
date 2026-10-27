@@ -11,6 +11,7 @@ mod passkey;
 mod device;
 mod sessions;
 mod maintenance;
+mod cloudflare;
 
 use axum::{
     extract::DefaultBodyLimit, http::{StatusCode, header, HeaderName, HeaderValue}, response::{IntoResponse, Response},
@@ -33,6 +34,7 @@ impl AppError {
     pub fn bad(msg: &str) -> Self { Self { status: StatusCode::BAD_REQUEST, message: msg.into() } }
     pub fn unauthorized() -> Self { Self { status: StatusCode::UNAUTHORIZED, message: "unauthorized".into() } }
     pub fn forbidden() -> Self { Self { status: StatusCode::FORBIDDEN, message: "forbidden".into() } }
+    pub fn cloudflare_failure() -> Self { Self { status: StatusCode::BAD_GATEWAY, message: "Cloudflare Zero Trust operation failed".into() } }
     pub fn upstream() -> Self { Self { status: StatusCode::BAD_GATEWAY, message: "upstream authentication failed".into() } }
 }
 impl From<sqlx::Error> for AppError {
@@ -151,6 +153,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/connect/register", post(management::register))
         .route("/admin/clients", get(management::clients).post(management::create_client))
         .route("/admin/audit", get(sessions::audit))
+        .route("/admin/cloudflare/status", get(cloudflare::status))
+        .route("/admin/cloudflare/apps", get(cloudflare::apps))
+        .route("/admin/cloudflare/groups", get(cloudflare::groups))
+        .route("/admin/cloudflare/policies", get(cloudflare::policies))
+        .route("/admin/cloudflare/links", get(cloudflare::links))
+        .route("/admin/cloudflare/links/{client}", axum::routing::put(cloudflare::put_link).delete(cloudflare::delete_link))
+        .route("/admin/cloudflare/apps/{app_id}/revoke-tokens", post(cloudflare::revoke_app_tokens))
         .route("/admin/clients/{client}/disable", post(management::disable_client))
         .route("/admin/clients/{client}/enable", post(management::enable_client))
         .route("/admin/clients/{client}/rotate", post(management::rotate_client_secret))
