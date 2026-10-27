@@ -44,6 +44,7 @@ jobs:
       - name: Validate browser scripts
         run: |
           node --check web/assets/app.js
+          node --check web/assets/cloudflare.js
           node --check web/assets/consent.js
           node --check web/assets/mfa.js
           node --check web/assets/security.js
