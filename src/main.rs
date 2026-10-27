@@ -4,6 +4,7 @@ mod db;
 mod provider;
 mod auth;
 mod management;
+mod directory;
 mod rate_limit;
 mod refresh;
 mod mfa;
@@ -152,6 +153,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/session/logout", post(auth::logout))
         .route("/connect/register", post(management::register))
         .route("/admin/clients", get(management::clients).post(management::create_client))
+        .route("/admin/users", get(directory::users))
+        .route("/admin/users/{id}", get(directory::user))
+        .route("/admin/users/{id}/sessions", get(directory::user_sessions))
+        .route("/admin/users/{id}/sessions/revoke", post(directory::revoke_sessions))
+        .route("/admin/users/{id}/disable", post(directory::disable))
+        .route("/admin/users/{id}/enable", post(directory::enable))
         .route("/admin/audit", get(sessions::audit))
         .route("/admin/cloudflare/status", get(cloudflare::status))
         .route("/admin/cloudflare/apps", get(cloudflare::apps))
