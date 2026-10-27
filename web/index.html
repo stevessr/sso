@@ -39,6 +39,12 @@
 <p id="cf-status" class="small" role="status">管理员登录后可读取连接状态。</p>
 <div class="grid"><div class="card"><h3>Access 应用</h3><p id="cf-inventory-count" class="small"></p><div id="cf-apps" class="stack"></div></div>
 <div class="card"><h3>SSO ↔ Access 应用关联</h3><label for="cf-client-id">SSO 客户端</label><select id="cf-client-id"></select><label for="cf-app-id">Cloudflare Access 应用 ID</label><input id="cf-app-id" placeholder="UUID / 32 位十六进制 ID"><div class="actions"><button id="cf-link">保存关联</button></div><div id="cf-links" class="stack"></div></div></div>
+<div class="card"><h3>显式撤销一个 Cloudflare Access 用户</h3>
+<p class="small">高风险：此操作会撤销指定用户在当前 Cloudflare 账户内所有 Access 应用的会话，不是单个 SSO 应用。务必先从 Cloudflare 控制台独立核对该用户邮箱。默认禁用，且不会影响 WARP 设备会话策略。</p>
+<label for="cf-user-email">经独立确认的 Cloudflare 用户邮箱</label><input id="cf-user-email" type="email" autocomplete="off" placeholder="name@example.org">
+<div class="actions"><button class="danger" id="cf-user-revoke" disabled>撤销用户的全部 Access 会话</button></div>
+</div>
+<details><summary>当前 Access 应用策略</summary><pre id="cf-app-policies">选择应用后可查看其策略。</pre></details>
 <details><summary>Cloudflare Access 群组（只读）</summary><pre id="cf-groups">尚未读取</pre></details>
 <details><summary>Cloudflare Access 可复用策略（只读）</summary><pre id="cf-policies">尚未读取</pre></details>
 </section>
