@@ -174,6 +174,7 @@ pub async fn login_finish(State(state):State<AppState>,headers:HeaderMap,Json(bo
         .bind(&session_digest).bind(&user).bind(crypto::now()+7*86400)
         .execute(&mut *tx).await?;
     tx.commit().await?;
+    crate::sessions::record(&state,&session_digest,&headers,"passkey").await?;
     let next=mfa::new_session_target(&state,&user,&session_digest,"/",Some("passkey")).await?;
     let secure=if state.config.public_url.starts_with("https://"){"; Secure"}else{""};
     let cookie=format!("sso_session={session}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax{secure}");

@@ -32,6 +32,9 @@ fn policy(path: &str) -> Option<(Kind, u32, Duration)> {
         "/oauth/token" => Some((Kind::Token, 60, Duration::from_secs(5 * minute))),
         "/oauth/introspect" => Some((Kind::Introspection, 120, Duration::from_secs(5 * minute))),
         "/oauth/revoke" => Some((Kind::Token, 60, Duration::from_secs(5 * minute))),
+        "/oauth/device_authorization" => Some((Kind::Registration, 20, Duration::from_secs(5 * minute))),
+        "/oauth/device/request" => Some((Kind::Account, 20, Duration::from_secs(5 * minute))),
+        "/oauth/device/decision" => Some((Kind::Account, 12, Duration::from_secs(5 * minute))),
         "/connect/register" => Some((Kind::Registration, 10, Duration::from_secs(60 * minute))),
         "/oauth/consent/decision" | "/session/logout" =>
             Some((Kind::Account, 40, Duration::from_secs(5 * minute))),
@@ -50,6 +53,8 @@ fn policy(path: &str) -> Option<(Kind, u32, Duration)> {
             Some((Kind::Start, 30, Duration::from_secs(5 * minute))),
         path if path.starts_with("/admin/") =>
             Some((Kind::Management, 120, Duration::from_secs(5 * minute))),
+        path if path.starts_with("/me/sessions/") =>
+            Some((Kind::Account, 20, Duration::from_secs(5 * minute))),
         path if path.starts_with("/me/link/") || path.starts_with("/me/unlink/")
             || path.starts_with("/me/apps/") || path.starts_with("/me/clients") =>
             Some((Kind::Account, 40, Duration::from_secs(5 * minute))),
@@ -143,5 +148,8 @@ mod tests {
         assert!(policy("/oauth/token").is_some());
         assert!(policy("/login/google").is_some());
         assert!(policy("/connect/register").is_some());
+        assert!(policy("/oauth/device_authorization").is_some());
+        assert!(policy("/oauth/device/request").is_some());
+        assert!(policy("/oauth/device/decision").is_some());
     }
 }

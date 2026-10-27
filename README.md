@@ -21,6 +21,27 @@ This is an active development implementation. Merging the initial gateway to `ma
 - Optional port fallback restricted to loopback interface.
 - Bounded, in-process per-TCP-peer IP and endpoint-group rate limits on login, authorization, callback, token, registration, consent, account and admin APIs; `Retry-After` on HTTP 429. Incoming `X-Forwarded-For` is intentionally never trusted.
 
+## 登录会话与审计日志
+
+- `GET /me/sessions`：查看当前账户未过期的浏览器会话，包括当前设备、User-Agent、登录方式、认证因子、到期时间；旧会话的部分元数据可能为空。
+- `DELETE /me/sessions/{id}`：撤销指定浏览器会话；`POST /me/sessions/others/revoke`：退出其他浏览器设备。所有写操作均检查同源 Origin、当前登录及最近十分钟内的认证保证，并清理相关会话因子记录。
+- `GET /admin/audit?limit=50`：管理员可查看最多 200 条近期安全事件。设备授权批准/拒绝、会话撤销等事件写入审计表，页面内亦可阅读。不会记录访问 Token 或设备验证码。
+- 新登录会话会记录截断后的 User-Agent 和登录方式，不信任来自客户端的转发 IP 头。会话撤销不会自动吊销已发行的下游 OAuth 令牌；使用已连接应用中的撤销功能处理下游授权。
+- 上线前仍需版本化迁移、自动数据保留期限、集中化审计日志导出和高并发测试。
+
+## OAuth 2.0 Device Authorization Grant (RFC 8628)
+
+Headless CLI clients, set-top boxes, routers and other browserless devices can use the OAuth 2.0 device flow without extracting browser cookies or asking users to enter passwords on the device.
+
+1. `POST /oauth/device_authorization` with form fields `client_id`, optional `client_secret` (for confidential clients) and optional `scope` (`profile`, `email`, `offline_access`). HTTP Basic client authentication is also supported.
+2. Response includes `device_code`, `user_code`, `verification_uri`, `verification_uri_complete`, `expires_in` (600) and `interval` (5 seconds). Display the short code and URL to the user.
+3. The user visits `/device`, authenticates through an upstream provider (and any required 2FA/Passkey step-up), verifies the client name and scopes, and explicitly approves or denies the device.
+4. Device polls `POST /oauth/token` with `grant_type=urn:ietf:params:oauth:grant-type:device_code`, `device_code`, `client_id` and its client secret if required. Handle `authorization_pending`, `slow_down`, `access_denied`, and `expired_token` without prompting the user again. Success returns the normal access token and optional rotating refresh grant.
+
+Both device and user codes are generated with a CSPRNG and **only SHA-256 hashes are stored in the database**. User codes have 40 bits of entropy, the code-entry endpoint is rate-limited, authorization is one-time and bound to the client, and polling is throttled server-side. User approval requires a CSRF-protected first-party session with MFA assurance. Users must compare the application name/scopes with the requesting device before approval. Device grants are short lived and cannot be reused after token issuance.
+
+**Before production:** add distributed (Redis/edge) throttling, expired-grant cleanup/retention, real-device E2E coverage, and account-login recovery ergonomics. Public device clients remain limited to their registered identity and the configured scopes.
+
 ## Passkeys, second factor and account assurance
 
 - **WebAuthn Passkey (beta)**: register while signed in via `POST /passkeys/register/start` and `/finish`, with browser `navigator.credentials.create`; sign in using account UUID via `/passkeys/login/start` and `/finish` and `navigator.credentials.get`. Registration/login challenges are stored **server-side**, expire in 5 minutes, are atomically one-use, bind registration to the user's current session and bind login to an HttpOnly SameSite Strict flow cookie. Creating/removing passkeys and starting TOTP enrollment require an authentication assurance no older than ten minutes; OAuth and WebAuthn login both record an assurance timestamp. Credential IDs are globally unique, and counters/backup metadata are updated after successful verification. Security settings are exposed in the MD3 WebUI.

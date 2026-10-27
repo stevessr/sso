@@ -168,6 +168,7 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
             sqlx::query(&state.db.q("INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,?,?)"))
                 .bind(crypto::digest(&session)).bind(&user_id).bind(crypto::now()+7*86400)
                 .execute(&state.db.pool).await?;
+            crate::sessions::record(&state,&crypto::digest(&session),&headers,&format!("oauth:{}",provider_id)).await?;
             let secure = if state.config.public_url.starts_with("https://") { "; Secure" } else { "" };
             let cookie = format!("sso_session={session}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax{secure}");
             let next=crate::mfa::new_session_target(&state,&user_id,&crypto::digest(&session),
@@ -179,6 +180,7 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
             sqlx::query(&state.db.q("INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,?,?)"))
                 .bind(crypto::digest(&session)).bind(&user_id).bind(crypto::now()+7*86400)
                 .execute(&state.db.pool).await?;
+            crate::sessions::record(&state,&crypto::digest(&session),&headers,&format!("oauth:{}",provider_id)).await?;
             let secure = if state.config.public_url.starts_with("https://") { "; Secure" } else { "" };
             let cookie = format!("sso_session={session}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax{secure}");
             // Linking starts from an already assured session, so carry the
@@ -268,10 +270,10 @@ pub async fn consent_decision(State(state): State<AppState>, headers: HeaderMap,
 pub struct TokenForm {
     grant_type: String,
     code: Option<String>, redirect_uri: Option<String>, code_verifier: Option<String>,
-    refresh_token: Option<String>,
+    refresh_token: Option<String>, device_code: Option<String>,
     client_id: Option<String>, client_secret: Option<String>
 }
-async fn authenticate_client(state: &AppState, headers: &HeaderMap, supplied_id: Option<&str>, supplied_secret: Option<&str>) -> AppResult<String> {
+pub(crate) async fn authenticate_client(state: &AppState, headers: &HeaderMap, supplied_id: Option<&str>, supplied_secret: Option<&str>) -> AppResult<String> {
     let mut id = supplied_id.unwrap_or_default().to_owned();
     let mut secret = supplied_secret.map(str::to_owned);
     if let Some(h) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
@@ -294,6 +296,10 @@ async fn authenticate_client(state: &AppState, headers: &HeaderMap, supplied_id:
 }
 pub async fn token(State(state): State<AppState>, headers: HeaderMap, Form(f): Form<TokenForm>) -> AppResult<Json<Value>> {
     let client_id = authenticate_client(&state,&headers,f.client_id.as_deref(),f.client_secret.as_deref()).await?;
+    if f.grant_type == "urn:ietf:params:oauth:grant-type:device_code" {
+        let code=f.device_code.as_deref().ok_or_else(||AppError::bad("invalid_request"))?;
+        return Ok(Json(crate::device::exchange(&state,&client_id,code).await?));
+    }
     if f.grant_type == "refresh_token" {
         let refresh = f.refresh_token.as_deref().ok_or_else(|| AppError::bad("invalid_grant"))?;
         return Ok(Json(crate::refresh::rotate(&state, &client_id, refresh).await?));
@@ -322,18 +328,24 @@ pub async fn token(State(state): State<AppState>, headers: HeaderMap, Form(f): F
     if used.rows_affected() != 1 { return Err(AppError::bad("invalid_grant")); }
     let user_id: String = row.try_get("user_id")?;
     let scope: String = row.try_get("scope")?;
+    Ok(Json(issue_tokens(&state, &client_id, &user_id, &scope).await?))
+}
+
+/// Shared access/refresh grant issuance for authorization-code and device-code flows.
+/// Both paths run the same linked-application policies.
+pub(crate) async fn issue_tokens(state: &AppState, client_id: &str, user_id: &str, scope: &str) -> AppResult<Value> {
     let access_token = crypto::random_token();
     sqlx::query(&state.db.q("INSERT INTO tokens (token_hash,client_id,user_id,scope,expires,revoked,suspended_until) VALUES (?,?,?,?,?,0,0)"))
-        .bind(crypto::digest(&access_token)).bind(&client_id).bind(&user_id).bind(&scope)
+        .bind(crypto::digest(&access_token)).bind(client_id).bind(user_id).bind(scope)
         .bind(crypto::now()+3600).execute(&state.db.pool).await?;
-    let refresh_token = crate::refresh::issue_initial(&state, &client_id, &user_id, &scope, &access_token).await?;
-    apply_policies(&state,&client_id,&user_id).await?;
+    let refresh_token = crate::refresh::issue_initial(state, client_id, user_id, scope, &access_token).await?;
+    apply_policies(state,client_id,user_id).await?;
     let mut result = json!({"access_token":access_token,"token_type":"Bearer","expires_in":3600,"scope":scope});
     if let Some(refresh) = refresh_token {
         result["refresh_token"] = json!(refresh);
         result["refresh_expires_in"] = json!(30 * 86400);
     }
-    Ok(Json(result))
+    Ok(result)
 }
 async fn apply_policies(state: &AppState, source: &str, user: &str) -> AppResult<()> {
     let rows = sqlx::query(&state.db.q("SELECT target_client,action,duration_seconds FROM policies WHERE source_client=?"))
@@ -435,7 +447,8 @@ pub async fn metadata(State(state): State<AppState>) -> Json<Value> {
         "revocation_endpoint":format!("{origin}/oauth/revoke"),
         "introspection_endpoint":format!("{origin}/oauth/introspect"),
         "registration_endpoint":format!("{origin}/connect/register"),
-        "response_types_supported":["code"],"grant_types_supported":["authorization_code","refresh_token"],
+        "device_authorization_endpoint":format!("{origin}/oauth/device_authorization"),
+        "response_types_supported":["code"],"grant_types_supported":["authorization_code","refresh_token","urn:ietf:params:oauth:grant-type:device_code"],
         "code_challenge_methods_supported":["S256"],
         "token_endpoint_auth_methods_supported":["client_secret_post","client_secret_basic","none"]}))
 }
