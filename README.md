@@ -97,6 +97,45 @@ Personal clients are limited to 10 per user in this iteration. This is NOT anony
 
 OAuth2 authorization server metadata: /.well-known/oauth-authorization-server. This service is NOT YET a downstream OpenID Connect issuer; it does not mint signed downstream ID tokens or publish downstream JWKS.
 
+## Keycloak-inspired administrator user directory
+
+This iteration adds **single-realm user lifecycle management** without changing
+the project's upstream identity-provider integrations or OAuth2 wire format.
+The administrator UI includes search, linked identities, active browser sessions,
+manual session revocation, and enabled/disabled account status.
+
+All API requests require the existing `SSO_ADMIN_TOKEN` bearer header.
+Mutations also enforce the gateway's same-origin check for browser requests.
+The following routes are available:
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| GET | `/admin/users?q=alice&limit=30&offset=0` | Paginated user directory, bounded search |
+| GET | `/admin/users/{id}` | User details and linked upstream identities |
+| GET | `/admin/users/{id}/sessions` | Browser session inventory |
+| POST | `/admin/users/{id}/sessions/revoke` | Revoke all browser sessions only |
+| POST | `/admin/users/{id}/disable` | Disable sign-in and revoke all existing grants |
+| POST | `/admin/users/{id}/enable` | Allow new sign-ins; no old grants restored |
+
+Disabling an account immediately removes all browser sessions and their MFA
+assurance metadata; revokes existing OAuth access and refresh tokens; invalidates
+authorization codes and pending consent requests; and denies already-approved
+device grants. New upstream login callbacks, Passkey logins, token issuance,
+refresh rotation, OAuth userinfo, and introspection all reject disabled accounts.
+Re-enabling does **not** reinstate previous tokens or browser sessions.
+
+Status is persisted in a separate `user_access` table for forward-compatible,
+additive migration on SQLite, PostgreSQL and MySQL. Existing accounts remain
+enabled unless an administrator explicitly disables them. Administrative changes
+and session revocations are written to the security audit log in the same
+database transaction as the mutation.
+
+This is **not Keycloak RBAC, realm isolation, LDAP/SAML federation, or downstream
+OIDC issuance**. A global bearer admin token is still required and should be
+guarded as a root-level secret. Account disable/enable under extreme concurrency
+needs cross-database integration and load tests before treating it as an
+enterprise-grade identity governance solution.
+
 ## Cloudflare Zero Trust Access integration (opt-in)
 
 The administrator console now provides an **account-scoped Cloudflare Access inventory**
