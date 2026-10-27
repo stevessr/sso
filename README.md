@@ -130,10 +130,12 @@ New admin endpoints (all use the existing `SSO_ADMIN_TOKEN` bearer check):
 | GET | `/admin/cloudflare/apps?page=1` | Access apps (50 per page) |
 | GET | `/admin/cloudflare/groups?page=1` | Access groups (50 per page) |
 | GET | `/admin/cloudflare/policies?page=1` | Reusable Access policies (50 per page) |
+| GET | `/admin/cloudflare/apps/{app_id}/policies?page=1` | App-specific policy inventory |
 | GET | `/admin/cloudflare/links` | Local SSO client ↔ Access app links |
 | PUT | `/admin/cloudflare/links/{sso_client_id}` | JSON: `{"access_app_id":"<id>"}`, validates remotely |
 | DELETE | `/admin/cloudflare/links/{sso_client_id}` | Delete only the local mapping |
 | POST | `/admin/cloudflare/apps/{app_id}/revoke-tokens` | **Revokes every user's tokens for that linked Access app** |
+| POST | `/admin/cloudflare/users/revoke` | **Revokes one explicitly named user's Access sessions across ALL applications** |
 
 The revoke endpoint is disabled unless
 `SSO_CLOUDFLARE_ENABLE_REVOKE=true`. It requires a linked application,
@@ -145,6 +147,38 @@ Cloudflare acknowledges success. If the Cloudflare response fails or times
 out, the operation might have completed remotely despite an error; review
 the Cloudflare control plane and audit events before retrying. No automatic
 retry is performed.
+
+### Optional manually initiated Cloudflare per-user revocation
+
+Cloudflare exposes `POST /accounts/{account_id}/access/organizations/revoke_user`,
+not a per-app, per-user revoke. To use it, set
+`SSO_CLOUDFLARE_ENABLE_USER_REVOKE=true` and grant the account API token
+**Access: Organizations, Identity Providers, and Groups Write**.
+This flag is separate from app-wide revocation and is disabled by default.
+
+Only an administrator can call `POST /admin/cloudflare/users/revoke`
+with JSON:
+```json
+{
+  "email": "verified-user@example.com",
+  "confirm_email": "verified-user@example.com",
+  "confirmation": "REVOKE_USER_ALL_ACCESS_APPLICATIONS"
+}
+```
+The administrator MUST verify the Cloudflare Access identity independently;
+**an SSO email field is not proof of Cloudflare identity**. This always affects
+the named identity across *all* Access apps in the account; it never silently
+fires when the user logs out or an SSO application is revoked.
+The request sends `devices=false` and `warp_session_reauth=false` to
+avoid inadvertently changing WARP authentication policy.
+The audit log retains a hash of the email, not the email itself. A successful
+Cloudflare API call returns `result: true`, and anything else is treated as
+failure; timeout outcomes may be ambiguous, so operators must inspect
+Cloudflare before retrying.
+
+Cloudflare application IDs are exactly 32 hexadecimal characters (unlike
+some group or reusable-policy UUIDs, which may be hyphenated). Invalid IDs
+and out-of-range page numbers are rejected rather than silently rewritten.
 
 **Security boundaries:** this does not add or remove Access policy
 memberships, automatically revoke users when their SSO session ends,
