@@ -155,6 +155,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/admin/audit", get(sessions::audit))
         .route("/admin/cloudflare/status", get(cloudflare::status))
         .route("/admin/cloudflare/apps", get(cloudflare::apps))
+        .route("/admin/cloudflare/apps/{app_id}/policies", get(cloudflare::app_policies))
+        .route("/admin/cloudflare/users/revoke", post(cloudflare::revoke_user_tokens))
         .route("/admin/cloudflare/groups", get(cloudflare::groups))
         .route("/admin/cloudflare/policies", get(cloudflare::policies))
         .route("/admin/cloudflare/links", get(cloudflare::links))
