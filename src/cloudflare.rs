@@ -67,8 +67,17 @@ async fn request(state: &AppState, cf: &CloudflareSettings, method: Method, path
         tracing::warn!(http_status = %response.status(), "Cloudflare API returned error");
         return Err(AppError::cloudflare_failure());
     }
-    let bytes = response.bytes().await.map_err(|_| AppError::cloudflare_failure())?;
-    if bytes.len() > MAX_RESPONSE { return Err(AppError::cloudflare_failure()); }
+    let mut response = response;
+    if response.content_length().is_some_and(|n| n > MAX_RESPONSE as u64) {
+        return Err(AppError::cloudflare_failure());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| AppError::cloudflare_failure())? {
+        if chunk.len() > MAX_RESPONSE.saturating_sub(bytes.len()) {
+            return Err(AppError::cloudflare_failure());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     let parsed: Value = serde_json::from_slice(&bytes).map_err(|_| AppError::cloudflare_failure())?;
     if parsed.get("success") != Some(&Value::Bool(true)) {
         return Err(AppError::cloudflare_failure());
