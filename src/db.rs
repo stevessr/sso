@@ -62,6 +62,7 @@ impl Db {
             "CREATE TABLE IF NOT EXISTS passkey_challenges (id VARCHAR(191) PRIMARY KEY, user_id VARCHAR(191) NOT NULL, kind VARCHAR(32) NOT NULL, state_json TEXT NOT NULL, session_hash VARCHAR(191), expires BIGINT NOT NULL, used BIGINT NOT NULL DEFAULT 0)",
             "CREATE TABLE IF NOT EXISTS policies (id VARCHAR(191) PRIMARY KEY, source_client VARCHAR(191) NOT NULL, target_client VARCHAR(191) NOT NULL, action VARCHAR(32) NOT NULL, duration_seconds BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS mappings (provider VARCHAR(191) PRIMARY KEY, fields TEXT NOT NULL, script TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS cloudflare_app_links (client_id VARCHAR(191) PRIMARY KEY, access_app_id VARCHAR(64) NOT NULL UNIQUE, created BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS audit (id VARCHAR(191) PRIMARY KEY, event VARCHAR(191) NOT NULL, actor TEXT NOT NULL, metadata TEXT NOT NULL, created BIGINT NOT NULL)"
         ];
         for statement in statements { sqlx::query(statement).execute(&self.pool).await?; }
