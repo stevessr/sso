@@ -30,6 +30,13 @@
 <div class="actions"><button class="tonal" id="totp-confirm">确认启用并生成恢复码</button><button class="danger" id="totp-disable">验证并停用 TOTP</button></div>
 <p class="small">恢复码只在启用时显示一次，请离线保存。TOTP 服务器密钥需要独立的 SSO_MFA_ENCRYPTION_KEY。</p></section>
 <section class="card"><h2>管理员控制台</h2><p class="small">使用部署时配置的管理员令牌。令牌只保存在本页面的运行内存，不写入浏览器持久存储。</p><label for="admin-token">管理员令牌</label><input id="admin-token" type="password" autocomplete="off" placeholder="SSO_ADMIN_TOKEN"><div class="actions"><button id="admin-refresh">读取客户端和策略</button></div><h3 class="space-top-20">安全审计日志</h3><p class="small">最近的安全事件，不记录 OAuth Token 或设备验证码。</p><pre id="audit-output" aria-live="polite">请先输入管理员令牌。</pre><h3 class="space-top-20">背景图与动态配色</h3><input id="background" type="file" accept="image/png,image/jpeg,image/webp"><div class="actions"><button class="tonal" id="background-upload">上传并提取主题色</button></div><p id="theme-note" class="small">从背景图提取种子色，形成近似 Material tonal palette。基于 Material Color Utilities 的 HCT 动态色板。</p></section>
+<section class="card wide"><h2>用户目录与账户生命周期</h2>
+<p class="small">参考 Keycloak 管理控制台：管理员可以查询用户、查看身份关联与浏览器会话、强制注销或禁用账户。禁用会永久吊销所有已签发的 OAuth Token；恢复账户需要用户重新认证。</p>
+<div class="row"><input id="directory-query" maxlength="100" placeholder="按用户名、邮箱或用户 ID 查询" aria-label="搜索用户"><button class="tonal" id="directory-search">查询用户</button></div>
+<div class="actions"><button class="outline" id="directory-prev" disabled>上一页</button><span class="small" id="directory-page">尚未查询</span><button class="outline" id="directory-next" disabled>下一页</button></div>
+<div id="directory-results" class="stack" aria-live="polite"></div>
+<div id="directory-detail" class="stack"></div>
+</section>
 <section class="card"><h2>注册 OAuth2 客户端</h2><label>应用名称</label><input id="client-name" placeholder="My App"><label>回调地址（每行一个）</label><textarea id="client-redirects" placeholder="https://app.example.com/callback"></textarea><label><input id="client-public" type="checkbox" class="inline-check"> 公共客户端（PKCE，无 client_secret）</label><label>自助注册访问令牌（可选，留空使用管理员令牌）</label><input id="registration-token" type="password" autocomplete="off"><div class="actions"><button id="client-create">使用初始化令牌注册</button><button class="tonal" id="client-own-create">使用当前登录账户注册</button></div><p class="small">当前账户可自助创建最多 10 个专属客户端，无需共享管理员令牌。登录后仅能管理自己注册的客户端。</p><pre id="client-output" aria-live="polite">凭证仅在创建时返回，请妥善保存。</pre><h3 class="space-top-20">我注册的客户端</h3><div id="my-clients" class="stack"><p class="small">登录后显示。</p></div></section>
 <section class="card"><h2>跨应用联动</h2><p class="small">某个客户端换取访问令牌成功后，对同一用户的另一客户端执行操作。临时停用自动过期；永久吊销不可恢复旧令牌。</p>
 <label>源客户端 ID</label><input id="source-client" placeholder="sso_..."><label>目标客户端 ID</label><input id="target-client" placeholder="sso_..."><label>动作</label><select id="policy-action"><option value="suspend">临时停用</option><option value="resume">恢复临时停用</option><option value="revoke">永久吊销</option></select><label>临时停用秒数</label><input id="policy-duration" type="number" min="1" max="604800" value="3600"><div class="actions"><button id="policy-create">创建联动规则</button></div><div id="policy-controls" class="stack"></div><details><summary>查看策略原始 JSON</summary><pre id="policies-output" aria-live="polite">请先验证管理员令牌。</pre></details></section>
@@ -58,5 +65,6 @@
 <script src="/assets/app.js" defer></script>
 <script src="/assets/cloudflare.js" defer></script>
 <script src="/assets/security.js" defer></script>
+<script src="/assets/directory.js" defer></script>
 </body>
 </html>
