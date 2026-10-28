@@ -159,6 +159,8 @@ pub async fn login_finish(State(state):State<AppState>,headers:HeaderMap,Json(bo
     }
     let (id,original_key,updated_key)=updated.ok_or_else(AppError::unauthorized)?;
     let mut tx=state.db.pool.begin().await?;
+    // Disable must serialize with the final assertion update and session insert.
+    crate::directory::lock_enabled(&state, &mut tx, &user).await?;
     // Prevent concurrent assertions from silently overwriting authenticator
     // counters or backup-state updates made by another request.
     if updated_key==original_key {
