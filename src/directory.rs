@@ -282,6 +282,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn token_issuance_requires_enabled_account_and_old_grants_never_recover() {
+        let (state, headers) = setup().await;
+        sqlx::query("INSERT INTO clients (id,name,secret_hash,redirects,created,enabled) VALUES ('app','Test',NULL,'[]',0,1)")
+            .execute(&state.db.pool).await.unwrap();
+        let issued = auth::issue_tokens(&state, "app", "u1", "profile offline_access")
+            .await.unwrap();
+        assert!(issued["refresh_token"].as_str().is_some());
+        let old = crypto::digest(issued["access_token"].as_str().unwrap());
+        disable(State(state.clone()), headers.clone(), Path("u1".into())).await.unwrap();
+        assert!(auth::issue_tokens(&state, "app", "u1", "profile offline_access").await.is_err());
+        enable(State(state.clone()), headers, Path("u1".into())).await.unwrap();
+        let row = sqlx::query("SELECT revoked FROM tokens WHERE token_hash=?")
+            .bind(old).fetch_one(&state.db.pool).await.unwrap();
+        assert_eq!(row.try_get::<i64, _>("revoked").unwrap(), 1);
+        let new_grant = auth::issue_tokens(&state, "app", "u1", "profile")
+            .await.unwrap();
+        assert!(new_grant["access_token"].as_str().is_some());
+        assert!(new_grant.get("refresh_token").is_none());
+    }
+
+    #[tokio::test]
     async fn revoking_browser_sessions_keeps_oauth_tokens() {
         let (state, headers) = setup().await;
         sqlx::query("INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,?,?)")
