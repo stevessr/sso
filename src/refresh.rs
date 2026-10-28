@@ -13,21 +13,33 @@ fn offline_access(scope: &str) -> bool {
 }
 
 /// Called only after the authorization code was validated and consumed.
-pub async fn issue_initial(
-    state: &AppState, client: &str, user: &str, scope: &str, access_token: &str,
+/// Insert a refresh family inside the caller's issuance transaction, so
+/// disabling an account can never slip between access/refresh writes.
+pub async fn issue_initial_in_tx(
+    state: &AppState, tx: &mut Transaction<'_, Any>,
+    client: &str, user: &str, scope: &str, access_token: &str,
 ) -> AppResult<Option<String>> {
     if !offline_access(scope) { return Ok(None); }
     let token = crypto::random_token();
     let family = uuid::Uuid::new_v4().to_string();
-    let mut tx = state.db.pool.begin().await?;
     sqlx::query(&state.db.q(
         "INSERT INTO refresh_tokens (token_hash,family_id,client_id,user_id,scope,expires,used,revoked) VALUES (?,?,?,?,?,?,0,0)"
     )).bind(crypto::digest(&token)).bind(&family).bind(client).bind(user)
-        .bind(scope).bind(crypto::now() + REFRESH_TTL).execute(&mut *tx).await?;
+        .bind(scope).bind(crypto::now() + REFRESH_TTL).execute(&mut **tx).await?;
     sqlx::query(&state.db.q("INSERT INTO refresh_access (token_hash,family_id) VALUES (?,?)"))
-        .bind(crypto::digest(access_token)).bind(&family).execute(&mut *tx).await?;
-    tx.commit().await?;
+        .bind(crypto::digest(access_token)).bind(&family).execute(&mut **tx).await?;
     Ok(Some(token))
+}
+
+/// Standalone helper retained for tests and existing callers.
+#[cfg(test)]
+pub async fn issue_initial(
+    state: &AppState, client: &str, user: &str, scope: &str, access_token: &str,
+) -> AppResult<Option<String>> {
+    let mut tx = state.db.pool.begin().await?;
+    let issued = issue_initial_in_tx(state, &mut tx, client, user, scope, access_token).await?;
+    tx.commit().await?;
+    Ok(issued)
 }
 
 async fn revoke_family(
@@ -46,7 +58,16 @@ async fn revoke_family(
 pub async fn rotate(state: &AppState, client: &str, token: &str) -> AppResult<Value> {
     if token.len() < 32 || token.len() > 512 { return Err(AppError::bad("invalid_grant")); }
     let digest = crypto::digest(token);
+    // Resolve immutable owner before opening the transaction, then lock its
+    // user row BEFORE any transactional reads (MySQL REPEATABLE READ safety).
+    let owner = sqlx::query(&state.db.q(
+        "SELECT user_id FROM refresh_tokens WHERE token_hash=? AND client_id=?"
+    )).bind(&digest).bind(client).fetch_optional(&state.db.pool).await?
+        .ok_or_else(|| AppError::bad("invalid_grant"))?
+        .try_get::<String, _>("user_id")?;
     let mut tx = state.db.pool.begin().await?;
+    crate::directory::lock_enabled(state, &mut tx, &owner).await
+        .map_err(|_| AppError::bad("invalid_grant"))?;
     let row = sqlx::query(&state.db.q(
         "SELECT family_id,user_id,scope,expires,used,revoked FROM refresh_tokens WHERE token_hash=? AND client_id=?"
     )).bind(&digest).bind(client).fetch_optional(&mut *tx).await?
@@ -65,11 +86,7 @@ pub async fn rotate(state: &AppState, client: &str, token: &str) -> AppResult<Va
     if revoked != 0 || expires <= crypto::now() {
         return Err(AppError::bad("invalid_grant"));
     }
-    // A disabled identity may not rotate a grant even if a concurrent revocation has not completed.
-    let user_id: String = row.try_get("user_id")?;
-    let access = sqlx::query(&state.db.q("SELECT disabled FROM user_access WHERE user_id=?"))
-        .bind(&user_id).fetch_optional(&mut *tx).await?;
-    if access.map(|r| r.try_get::<i64,_>("disabled").unwrap_or(1) != 0).unwrap_or(false) {
+    if row.try_get::<String, _>("user_id")? != owner {
         return Err(AppError::bad("invalid_grant"));
     }
     let changed = sqlx::query(&state.db.q(
