@@ -40,6 +40,7 @@ impl Db {
     async fn migrate(&self) -> Result<(), sqlx::Error> {
         let statements = [
             "CREATE TABLE IF NOT EXISTS users (id VARCHAR(191) PRIMARY KEY, name TEXT NOT NULL, email TEXT, avatar TEXT, created BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS user_access (user_id VARCHAR(191) PRIMARY KEY, disabled BIGINT NOT NULL DEFAULT 0, updated BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS identities (provider VARCHAR(191) NOT NULL, subject VARCHAR(191) NOT NULL, user_id VARCHAR(191) NOT NULL, PRIMARY KEY(provider,subject))",
             "CREATE TABLE IF NOT EXISTS clients (id VARCHAR(191) PRIMARY KEY, name TEXT NOT NULL, secret_hash VARCHAR(191), redirects TEXT NOT NULL, created BIGINT NOT NULL, enabled BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS client_owners (client_id VARCHAR(191) PRIMARY KEY, user_id VARCHAR(191) NOT NULL)",

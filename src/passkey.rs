@@ -109,6 +109,7 @@ pub async fn login_start(State(state):State<AppState>,headers:HeaderMap,Json(bod
 {
     auth::require_same_origin(&state,&headers)?;
     if Uuid::try_from(body.user_id.as_str()).is_err() {return Err(AppError::bad("invalid account identifier"))}
+    crate::directory::require_enabled(&state, &body.user_id).await?;
     let saved=credentials(&state,&body.user_id).await?;
     if saved.is_empty(){return Err(AppError::bad("no passkeys registered for account"))}
     let creds:Vec<Passkey>=saved.into_iter().map(|(_,p)|p).collect();
@@ -134,6 +135,7 @@ pub async fn login_finish(State(state):State<AppState>,headers:HeaderMap,Json(bo
     )).bind(&body.request_id).bind(crypto::now()).fetch_optional(&state.db.pool).await?
         .ok_or_else(||AppError::bad("passkey login expired"))?;
     let user:String=row.try_get("user_id")?;
+    crate::directory::require_enabled(&state, &user).await?;
     let raw:String=row.try_get("state_json")?;
     let ceremony:PasskeyAuthentication=serde_json::from_str(&raw)
         .map_err(|_|AppError::bad("invalid authentication state"))?;
@@ -157,6 +159,8 @@ pub async fn login_finish(State(state):State<AppState>,headers:HeaderMap,Json(bo
     }
     let (id,original_key,updated_key)=updated.ok_or_else(AppError::unauthorized)?;
     let mut tx=state.db.pool.begin().await?;
+    // Disable must serialize with the final assertion update and session insert.
+    crate::directory::lock_enabled(&state, &mut tx, &user).await?;
     // Prevent concurrent assertions from silently overwriting authenticator
     // counters or backup-state updates made by another request.
     if updated_key==original_key {

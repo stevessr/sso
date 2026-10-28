@@ -155,6 +155,7 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
             .bind(&provider_id).bind(&profile.subject).bind(&id).execute(&state.db.pool).await?;
         id
     };
+    crate::directory::require_enabled(&state, &user_id).await?;
     let mut response = match tx.mode.as_str() {
         "client" => {
             let client_id = tx.client_id.ok_or_else(|| AppError::bad("missing client"))?;
@@ -168,11 +169,8 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
                 .bind(crypto::now()+300).execute(&state.db.pool).await?;
             // A first-party browser session is needed to bind consent approval to the
             // person who just authenticated upstream, not merely to a URL parameter.
-            let session = crypto::random_token();
-            sqlx::query(&state.db.q("INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,?,?)"))
-                .bind(crypto::digest(&session)).bind(&user_id).bind(crypto::now()+7*86400)
-                .execute(&state.db.pool).await?;
-            crate::sessions::record(&state,&crypto::digest(&session),&headers,&format!("oauth:{}",provider_id)).await?;
+            let session = crate::sessions::create_browser_session(
+                &state, &user_id, &headers, &format!("oauth:{}", provider_id)).await?;
             let secure = if state.config.public_url.starts_with("https://") { "; Secure" } else { "" };
             let cookie = format!("sso_session={session}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax{secure}");
             let next=crate::mfa::new_session_target(&state,&user_id,&crypto::digest(&session),
@@ -180,11 +178,8 @@ pub async fn callback(State(state): State<AppState>, Path(provider_id): Path<Str
             Ok(([(header::SET_COOKIE,cookie)],Redirect::to(&next)).into_response())
         },
         "login" | "link" => {
-            let session = crypto::random_token();
-            sqlx::query(&state.db.q("INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,?,?)"))
-                .bind(crypto::digest(&session)).bind(&user_id).bind(crypto::now()+7*86400)
-                .execute(&state.db.pool).await?;
-            crate::sessions::record(&state,&crypto::digest(&session),&headers,&format!("oauth:{}",provider_id)).await?;
+            let session = crate::sessions::create_browser_session(
+                &state, &user_id, &headers, &format!("oauth:{}", provider_id)).await?;
             let secure = if state.config.public_url.starts_with("https://") { "; Secure" } else { "" };
             let cookie = format!("sso_session={session}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax{secure}");
             // Linking starts from an already assured session, so carry the
@@ -338,11 +333,16 @@ pub async fn token(State(state): State<AppState>, headers: HeaderMap, Form(f): F
 /// Shared access/refresh grant issuance for authorization-code and device-code flows.
 /// Both paths run the same linked-application policies.
 pub(crate) async fn issue_tokens(state: &AppState, client_id: &str, user_id: &str, scope: &str) -> AppResult<Value> {
+    let mut tx = state.db.pool.begin().await?;
+    // Single transaction + per-user lock: disable cannot leave a fresh token
+    // alive for a subsequent re-enable, even with concurrent OAuth requests.
+    crate::directory::lock_enabled(state, &mut tx, user_id).await?;
     let access_token = crypto::random_token();
     sqlx::query(&state.db.q("INSERT INTO tokens (token_hash,client_id,user_id,scope,expires,revoked,suspended_until) VALUES (?,?,?,?,?,0,0)"))
         .bind(crypto::digest(&access_token)).bind(client_id).bind(user_id).bind(scope)
-        .bind(crypto::now()+3600).execute(&state.db.pool).await?;
-    let refresh_token = crate::refresh::issue_initial(state, client_id, user_id, scope, &access_token).await?;
+        .bind(crypto::now()+3600).execute(&mut *tx).await?;
+    let refresh_token = crate::refresh::issue_initial_in_tx(state, &mut tx, client_id, user_id, scope, &access_token).await?;
+    tx.commit().await?;
     apply_policies(state,client_id,user_id).await?;
     let mut result = json!({"access_token":access_token,"token_type":"Bearer","expires_in":3600,"scope":scope});
     if let Some(refresh) = refresh_token {
@@ -384,7 +384,7 @@ async fn apply_policies(state: &AppState, source: &str, user: &str) -> AppResult
 pub async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Json<Value>> {
     let bearer = headers.get(header::AUTHORIZATION).and_then(|h| h.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer ")).ok_or_else(AppError::unauthorized)?;
-    let row = sqlx::query(&state.db.q("SELECT u.id,u.name,u.email,u.avatar,t.scope FROM tokens t JOIN users u ON u.id=t.user_id JOIN clients c ON c.id=t.client_id LEFT JOIN app_access a ON a.client_id=t.client_id AND a.user_id=t.user_id WHERE t.token_hash=? AND t.expires>? AND t.revoked=0 AND c.enabled=1 AND t.suspended_until<=? AND COALESCE(a.suspended_until,0)<=?"))
+    let row = sqlx::query(&state.db.q("SELECT u.id,u.name,u.email,u.avatar,t.scope FROM tokens t JOIN users u ON u.id=t.user_id JOIN clients c ON c.id=t.client_id LEFT JOIN app_access a ON a.client_id=t.client_id AND a.user_id=t.user_id WHERE t.token_hash=? AND t.expires>? AND t.revoked=0 AND c.enabled=1 AND t.suspended_until<=? AND COALESCE(a.suspended_until,0)<=? AND NOT EXISTS (SELECT 1 FROM user_access ua WHERE ua.user_id=t.user_id AND ua.disabled=1)"))
         .bind(crypto::digest(bearer)).bind(crypto::now()).bind(crypto::now()).bind(crypto::now())
         .fetch_optional(&state.db.pool).await?.ok_or_else(AppError::unauthorized)?;
     let scope: String = row.try_get("scope")?;
@@ -420,7 +420,7 @@ pub async fn introspect(State(state): State<AppState>, headers: HeaderMap, Form(
         "SELECT t.user_id, t.scope, t.expires FROM tokens t \
          LEFT JOIN app_access a ON a.user_id=t.user_id AND a.client_id=t.client_id \
          WHERE t.token_hash=? AND t.client_id=? AND t.expires>? AND t.revoked=0 \
-         AND t.suspended_until<=? AND COALESCE(a.suspended_until,0)<=?"
+         AND t.suspended_until<=? AND COALESCE(a.suspended_until,0)<=?          AND NOT EXISTS (SELECT 1 FROM user_access ua WHERE ua.user_id=t.user_id AND ua.disabled=1)"
     )).bind(crypto::digest(&f.token)).bind(&caller)
         .bind(crypto::now()).bind(crypto::now()).bind(crypto::now())
         .fetch_optional(&state.db.pool).await?;
@@ -472,7 +472,7 @@ fn cookie_value<'a>(headers: &'a HeaderMap, key: &str) -> Option<&'a str> {
 }
 pub(crate) async fn session_user_raw(state: &AppState, headers: &HeaderMap) -> AppResult<String> {
     let token = cookie_value(headers, "sso_session").ok_or_else(AppError::unauthorized)?;
-    let row = sqlx::query(&state.db.q("SELECT user_id FROM sessions WHERE token_hash=? AND expires>?"))
+    let row = sqlx::query(&state.db.q("SELECT user_id FROM sessions WHERE token_hash=? AND expires>? AND NOT EXISTS (SELECT 1 FROM user_access ua WHERE ua.user_id=sessions.user_id AND ua.disabled=1)"))
         .bind(crypto::digest(token)).bind(crypto::now()).fetch_optional(&state.db.pool).await?
         .ok_or_else(AppError::unauthorized)?;
     Ok(row.try_get("user_id")?)

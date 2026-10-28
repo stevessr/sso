@@ -14,6 +14,25 @@ pub async fn record(state:&AppState,hash:&str,headers:&HeaderMap,method:&str)->A
         .bind(crypto::now()).execute(&state.db.pool).await?;
     Ok(())
 }
+/// Create an OAuth browser session with the same per-user lock used by
+/// administrator disable/enable. Device metadata is committed with the session.
+pub async fn create_browser_session(state: &AppState, user: &str, headers: &HeaderMap, method: &str) -> AppResult<String> {
+    let session = crypto::random_token();
+    let digest = crypto::digest(&session);
+    let agent = headers.get(header::USER_AGENT).and_then(|v|v.to_str().ok()).unwrap_or("Unknown")
+        .chars().take(160).collect::<String>();
+    let mut tx = state.db.pool.begin().await?;
+    crate::directory::lock_enabled(state, &mut tx, user).await?;
+    sqlx::query(&state.db.q("INSERT INTO sessions (token_hash,user_id,expires) VALUES (?,?,?)"))
+        .bind(&digest).bind(user).bind(crypto::now() + 7*86400)
+        .execute(&mut *tx).await?;
+    sqlx::query(&state.db.q("INSERT INTO session_devices (token_hash,user_agent,method,created) VALUES (?,?,?,?)"))
+        .bind(&digest).bind(agent).bind(method.chars().take(64).collect::<String>())
+        .bind(crypto::now()).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(session)
+}
+
 pub async fn event(state:&AppState,actor:&str,name:&str,metadata:Value)->AppResult<()>{
     // Never pass bearer tokens, credentials, account secrets or device codes.
     sqlx::query(&state.db.q("INSERT INTO audit (id,event,actor,metadata,created) VALUES (?,?,?,?,?)"))
