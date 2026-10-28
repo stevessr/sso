@@ -149,6 +149,8 @@ mod tests {
             registration_token_hash: None, providers: vec![],
         };
         let state = AppState { config: Arc::new(config), db, http: reqwest::Client::new() };
+        sqlx::query("INSERT INTO users (id,name,created) VALUES ('user','Test User',0)")
+            .execute(&state.db.pool).await.unwrap();
         sqlx::query("INSERT INTO clients (id,name,secret_hash,redirects,created,enabled) VALUES ('app','Example',NULL,'[]',0,1)")
             .execute(&state.db.pool).await.unwrap();
         sqlx::query("INSERT INTO tokens (token_hash,client_id,user_id,scope,expires,revoked,suspended_until) VALUES (?,'app','user','profile offline_access',?,0,0)")
