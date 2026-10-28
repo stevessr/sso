@@ -15,6 +15,22 @@ pub struct Search {
 
 /// A missing access row is an existing account's default (enabled) state.
 /// Kept in a separate table for portable SQLite/PostgreSQL/MySQL migration.
+/// Serialize credential issuance, session creation and administrative suspension
+/// on the user's row. UPDATE is a portable write lock across the supported
+/// databases; it MUST be the first statement inside a new transaction so
+/// MySQL does not retain a stale consistent-read snapshot.
+pub async fn lock_enabled(state: &AppState, tx: &mut Transaction<'_, Any>, user: &str) -> AppResult<()> {
+    sqlx::query(&state.db.q("UPDATE users SET name=name WHERE id=?"))
+        .bind(user).execute(&mut **tx).await?;
+    let row = sqlx::query(&state.db.q(
+        "SELECT u.id,COALESCE(a.disabled,0) AS disabled FROM users u \
+         LEFT JOIN user_access a ON a.user_id=u.id WHERE u.id=?"))
+        .bind(user).fetch_optional(&mut **tx).await?
+        .ok_or_else(AppError::unauthorized)?;
+    if row.try_get::<i64, _>("disabled")? != 0 { return Err(AppError::forbidden()); }
+    Ok(())
+}
+
 pub async fn require_enabled(state: &AppState, user: &str) -> AppResult<()> {
     let row = sqlx::query(&state.db.q("SELECT disabled FROM user_access WHERE user_id=?"))
         .bind(user).fetch_optional(&state.db.pool).await?;
@@ -124,6 +140,9 @@ pub async fn revoke_sessions(State(state): State<AppState>, headers: HeaderMap, 
     management::admin(&state, &headers)?;
     auth::require_same_origin(&state, &headers)?;
     let mut tx = state.db.pool.begin().await?;
+    // Take the same per-user write lock as login/token issuance.
+    sqlx::query(&state.db.q("UPDATE users SET name=name WHERE id=?"))
+        .bind(&id).execute(&mut *tx).await?;
     if sqlx::query(&state.db.q("SELECT id FROM users WHERE id=?"))
         .bind(&id).fetch_optional(&mut *tx).await?.is_none() {
         return Err(AppError::bad("unknown user"));
@@ -141,6 +160,9 @@ async fn change_status(state: AppState, headers: HeaderMap, id: String, disabled
     management::admin(&state, &headers)?;
     auth::require_same_origin(&state, &headers)?;
     let mut tx = state.db.pool.begin().await?;
+    // Take the same per-user write lock as login/token issuance.
+    sqlx::query(&state.db.q("UPDATE users SET name=name WHERE id=?"))
+        .bind(&id).execute(&mut *tx).await?;
     if sqlx::query(&state.db.q("SELECT id FROM users WHERE id=?"))
         .bind(&id).fetch_optional(&mut *tx).await?.is_none() {
         return Err(AppError::bad("unknown user"));
