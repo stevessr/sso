@@ -23,11 +23,17 @@ const MAX_BUCKETS: usize = 16_384;
 #[derive(Clone, Copy, Hash, Eq, PartialEq, Debug)]
 enum Kind {
     Start, Callback, Token, Introspection, Registration, Management, Account,
+    AccountRead,
 }
 
 fn policy(path: &str) -> Option<(Kind, u32, Duration)> {
     let minute = 60;
     match path {
+        // Read-only account endpoints still expose session/factor/account data.
+        // Keep their bucket separate so a page refresh cannot starve MFA changes.
+        "/me" | "/me/links" | "/me/apps" | "/me/sessions"
+        | "/mfa/status" | "/oauth/consent/request" =>
+            Some((Kind::AccountRead, 120, Duration::from_secs(5 * minute))),
         "/oauth/authorize" => Some((Kind::Start, 30, Duration::from_secs(5 * minute))),
         "/oauth/token" => Some((Kind::Token, 60, Duration::from_secs(5 * minute))),
         "/oauth/introspect" => Some((Kind::Introspection, 120, Duration::from_secs(5 * minute))),
@@ -151,5 +157,13 @@ mod tests {
         assert!(policy("/oauth/device_authorization").is_some());
         assert!(policy("/oauth/device/request").is_some());
         assert!(policy("/oauth/device/decision").is_some());
+        for path in ["/me", "/me/links", "/me/apps", "/me/sessions", "/mfa/status", "/oauth/consent/request"] {
+            let (kind, cap, _) = policy(path).expect("account read must be bounded");
+            assert_eq!(kind, Kind::AccountRead, "{path}");
+            assert!(cap >= 60, "normal UI navigation must have headroom");
+        }
+        assert_eq!(policy("/mfa/verify").unwrap().0, Kind::Account);
+        assert_eq!(policy("/me/sessions/others/revoke").unwrap().0, Kind::Account);
+
     }
 }
